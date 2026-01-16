@@ -67,46 +67,46 @@ ClientHandler::~ClientHandler()
 
 json ClientHandler::process_message(json & msg)
 {
-  bool handled = false;
-  json response = {{"id", msg["id"]}, {"result", false}};
+    bool handled = false;
+    json response = {{"id", msg["id"]}, {"result", false}};
 
-  if (!msg.contains("op")) {
-    response["error"] = "No op specified";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
+    if (!msg.contains("op")) {
+      response["error"] = "No op specified";
+      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
+      return response;
+    }
+
+    std::string op = msg["op"];
+
+    if (op == "call_service") {
+      handled = call_service(msg, response);
+    }
+
+    if (op == "subscribe") {
+      handled = subscribe_to_topic(msg, response);
+    }
+
+    if (op == "advertise") {
+      handled = advertise_topic(msg, response);
+    }
+
+    if (op == "unadvertise") {
+      handled = unadvertise_topic(msg, response);
+    }
+
+    if (op == "publish") {
+      handled = publish_to_topic(msg, response);
+    }
+
+    if (op == "unsubscribe") {
+      handled = unsubscribe_from_topic(msg, response);
+    }
+
+    if (!handled) {
+      RCLCPP_WARN(get_logger(), "Unhadled request: %s", msg.dump().c_str());
+    }
+
     return response;
-  }
-
-  std::string op = msg["op"];
-
-  if (op == "call_service") {
-    handled = call_service(msg, response);
-  }
-
-  if (op == "subscribe") {
-    handled = subscribe_to_topic(msg, response);
-  }
-
-  if (op == "advertise") {
-    handled = advertise_topic(msg, response);
-  }
-
-  if (op == "unadvertise") {
-    handled = unadvertise_topic(msg, response);
-  }
-
-  if (op == "publish") {
-    handled = publish_to_topic(msg, response);
-  }
-
-  if (op == "unsubscribe") {
-    handled = unsubscribe_from_topic(msg, response);
-  }
-
-  if (!handled) {
-    RCLCPP_WARN(get_logger(), "Unhadled request: %s", msg.dump().c_str());
-  }
-
-  return response;
 }
 
 void ClientHandler::send_message(std::string & msg)
@@ -174,14 +174,14 @@ void ClientHandler::subscription_callback(topic_params & params, std::shared_ptr
 bool ClientHandler::subscribe_to_topic(const json & msg, json & response)
 {
   response["op"] = "subscribe_response";
-  if (!msg.contains("topic") || !msg["topic"].is_string()) {
+  if (!msg.contains("topic") || !msg.at("topic").is_string()) {
     response["result"] = false;
     response["error"] = "No topic specified";
     RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
     return true;
   }
 
-  std::string topic = msg["topic"];
+  std::string topic = msg.at("topic");
   std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
   if (topics.find(topic) == topics.end()) {
     response["error"] = "Topic " + topic + " not found";
@@ -191,18 +191,18 @@ bool ClientHandler::subscribe_to_topic(const json & msg, json & response)
     return true;
   }
   size_t history_depth = 10;
-  if (msg.contains("history_depth") && msg["history_depth"].is_number()) {
-    history_depth = msg["history_depth"];
-  } else if (msg.contains("queue_size") && msg["queue_size"].is_number()) {
-    history_depth = msg["queue_size"];
+  if (msg.contains("history_depth") && msg.at("history_depth").is_number()) {
+    history_depth = msg.at("history_depth");
+  } else if (msg.contains("queue_size") && msg.at("queue_size").is_number()) {
+    history_depth = msg.at("queue_size");
   }
   rclcpp::Duration throttle_rate(0, 0);
-  if (msg.contains("throttle_rate") && msg["throttle_rate"].is_number()) {
-    size_t throttle_rate_ms = msg["throttle_rate"];
+  if (msg.contains("throttle_rate") && msg.at("throttle_rate").is_number()) {
+    size_t throttle_rate_ms = msg.at("throttle_rate");
     throttle_rate = rclcpp::Duration(0, throttle_rate_ms * 1000000);
   }
   std::string compression =
-    (!msg.contains("compression") || !msg["compression"].is_string()) ? "none" : msg["compression"];
+    (!msg.contains("compression") || !msg.at("compression").is_string()) ? "none" : msg.at("compression");
 
   auto sub_type = topics[topic][0];
   if (subscriptions_.count(topic) == 0) {
@@ -222,7 +222,7 @@ bool ClientHandler::unsubscribe_from_topic(const json & msg, json & response)
 {
   response["op"] = "unsubscribe_response";
 
-  std::string topic = msg["topic"];
+  std::string topic = msg.at("topic");
   if (subscriptions_.count(topic) > 0) {
     subscriptions_[topic]();
     subscriptions_.erase(topic);
@@ -235,30 +235,30 @@ bool ClientHandler::unsubscribe_from_topic(const json & msg, json & response)
 bool ClientHandler::advertise_topic(const json & msg, json & response)
 {
   response["op"] = "advertise_response";
-  if (!msg.contains("type") || !msg["type"].is_string()) {
+  if (!msg.contains("type") || !msg.at("type").is_string()) {
     response["result"] = false;
     response["error"] = "No type specified";
     RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
     return true;
   }
 
-  if (!msg.contains("topic") || !msg["topic"].is_string()) {
+  if (!msg.contains("topic") || !msg.at("topic").is_string()) {
     response["result"] = false;
     response["error"] = "No topic specified";
     RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
     return true;
   }
 
-  std::string topic = msg["topic"];
-  std::string type = rws::message_type_to_ros2_style(msg["type"]);
+  std::string topic = msg.at("topic");
+  std::string type = rws::message_type_to_ros2_style(msg.at("type"));
   size_t history_depth = 10;
-  if (msg.contains("history_depth") && msg["history_depth"].is_number()) {
-    history_depth = msg["history_depth"];
-  } else if (msg.contains("queue_size") && msg["queue_size"].is_number()) {
-    history_depth = msg["queue_size"];
+  if (msg.contains("history_depth") && msg.at("history_depth").is_number()) {
+    history_depth = msg.at("history_depth");
+  } else if (msg.contains("queue_size") && msg.at("queue_size").is_number()) {
+    history_depth = msg.at("queue_size");
   }
   bool latch =
-    (msg.contains("latch") && msg["latch"].is_boolean()) ? msg["latch"].get<bool>() : false;
+    (msg.contains("latch") && msg.at("latch").is_boolean()) ? msg.at("latch").get<bool>() : false;
   topic_params params(topic, type, history_depth, latch);
 
   if (publishers_.count(topic) == 0) {
@@ -274,7 +274,7 @@ bool ClientHandler::unadvertise_topic(const json & msg, json & response)
 {
   response["op"] = "unadvertise_response";
 
-  std::string topic = msg["topic"];
+  std::string topic = msg.at("topic");
   if (publishers_.count(topic) > 0) {
     publishers_[topic]();
     publishers_.erase(topic);
@@ -297,10 +297,10 @@ bool ClientHandler::publish_to_topic(const json & msg, json & response)
     return true;
   }
 
-  std::string topic = msg["topic"];
+  std::string topic = msg.at("topic");
 
   if (publishers_.count(topic) > 0) {
-    json msg_json = msg["msg"];
+    json msg_json = msg.at("msg");
     std::string type = publisher_type_[topic];
     auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
     publisher_cb_[topic](serialized_msg);
@@ -320,7 +320,9 @@ bool ClientHandler::call_service(const json & msg, json & response)
     RCLCPP_ERROR(get_logger(), "No service specified");
     return true;
   }
-  std::string service = msg["service"];
+  std::string service = msg.at("service");
+
+  RCLCPP_DEBUG(get_logger(), "call_service: %s", service.c_str());
 
   response["op"] = "service_response";
   response["service"] = service;
@@ -335,7 +337,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
       response["values"]["topics"].push_back(it->first);
       response["values"]["types"].push_back(it->second[0]);
 
-      if (msg["service"] == "/rosapi/topics_and_raw_types") {
+      if (msg.at("service") == "/rosapi/topics_and_raw_types") {
         response["values"]["typedefs_full_text"].push_back(
           rws::generate_message_meta(it->second[0], rosbridge_compatible_));
       }
@@ -345,7 +347,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
   }
 
   if (service == "/rosapi/service_type") {
-    std::string service_name = msg["args"]["service"];
+    std::string service_name = msg.at("args").at("service");
     std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
     if (services.find(service_name) == services.end()) {
       RCLCPP_ERROR(get_logger(), "Service not found: %s", service_name.c_str());
@@ -373,7 +375,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
   if (service == "/rosapi/publishers") {
     response["values"]["publishers"] = json::array();
 
-    std::vector<rclcpp::TopicEndpointInfo> publishers = node_->get_publishers_info_by_topic(msg["args"]["topic"]);
+    std::vector<rclcpp::TopicEndpointInfo> publishers = node_->get_publishers_info_by_topic(msg.at("args").at("topic"));
     for (const auto & pub_info : publishers) {
       response["values"]["publishers"].push_back(("/" + pub_info.node_name()).c_str());
     }
@@ -385,7 +387,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
   if (service == "/rosapi/subscribers") {
     response["values"]["subscribers"] = json::array();
 
-    std::vector<rclcpp::TopicEndpointInfo> subscribers = node_->get_subscriptions_info_by_topic(msg["args"]["topic"]);
+    std::vector<rclcpp::TopicEndpointInfo> subscribers = node_->get_subscriptions_info_by_topic(msg.at("args").at("topic"));
     for (const auto & sub_info : subscribers) {
       response["values"]["subscribers"].push_back(("/" + sub_info.node_name()).c_str());
     }
@@ -399,7 +401,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
     response["values"]["publishing"] = json::array();
     response["values"]["services"] = json::array();
 
-    auto [ns, node_name] = split_ns_node_name(msg["args"]["node"]);
+    auto [ns, node_name] = split_ns_node_name(msg.at("args").at("node"));
 
     std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
     for (auto it = topics.begin(); it != topics.end(); ++it) {
@@ -430,7 +432,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
     } catch (const std::exception & e) {
       RCLCPP_ERROR(
         get_logger(), "Exception while fetching services for node(%s), ns=%s, name=%s: %s",
-        msg["args"]["node"].get<std::string>().c_str(), ns.c_str(), node_name.c_str(), e.what());
+        msg.at("args").at("node").get<std::string>().c_str(), ns.c_str(), node_name.c_str(), e.what());
     }
 
     response["result"] = true;
@@ -438,7 +440,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
   }
 
   if (service == "/rosapi/topic_type") {
-    std::string topic_name = msg["args"]["topic"].get<std::string>();
+    std::string topic_name = msg.at("args").at("topic").get<std::string>();
     std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types(); 
     if (topics.find(topic_name) == topics.end()) {
       RCLCPP_ERROR(get_logger(), "Topic not found: %s", topic_name.c_str());
@@ -451,7 +453,7 @@ bool ClientHandler::call_service(const json & msg, json & response)
   }
 
   if (service == "/rosapi/services_for_type") {
-    std::string service_type = msg["args"]["type"].get<std::string>();
+    std::string service_type = msg.at("args").at("type").get<std::string>();
     auto service_name_and_types = node_->get_service_names_and_types();
 
     std::map<std::string, std::vector<std::string>> filtered_service_name_and_types;
@@ -478,8 +480,8 @@ bool ClientHandler::call_service(const json & msg, json & response)
 
 bool ClientHandler::call_external_service(const json & msg, json & response)
 {
-  std::string service_name = msg["service"];
-  std::string service_type = msg["type"];
+  std::string service_name = msg.at("service");
+  std::string service_type = msg.at("type");
 
   std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
   if (services.find(service_name) == services.end()) {
@@ -501,9 +503,9 @@ bool ClientHandler::call_external_service(const json & msg, json & response)
     RCLCPP_INFO(get_logger(), "service not available, waiting again...");
   }
 
-  auto serialized_req = json_to_serialized_service_request(service_type, msg["args"]);
+  auto serialized_req = json_to_serialized_service_request(service_type, msg.at("args"));
   using ServiceResponseFuture = rws::GenericClient::SharedFuture;
-  auto response_received_callback = [this, id = msg["id"], service_name,
+  auto response_received_callback = [this, id = msg.at("id"), service_name,
                                      service_type](ServiceResponseFuture future) {
     json response_json = serialized_service_response_to_json(service_type, future.get());
     json m = {
