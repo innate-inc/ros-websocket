@@ -15,7 +15,7 @@
 
 #include <exception>
 
-#include "dds/ddsrt/endian.h"
+#include "endian.h"
 
 cycser::cycser(std::vector<unsigned char> & dst_) : dst(dst_), off(0)
 {
