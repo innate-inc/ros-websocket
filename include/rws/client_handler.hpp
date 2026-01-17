@@ -20,6 +20,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rws/connector.hpp"
 #include "rws/generic_client.hpp"
+#include "rws/generic_action_client.hpp"
 
 namespace rws
 {
@@ -51,6 +52,7 @@ private:
   std::map<std::string, std::function<void(std::shared_ptr<const rclcpp::SerializedMessage>)>>
     publisher_cb_;
   std::map<std::string, std::shared_ptr<rws::GenericClient>> clients_;
+  std::map<std::string, std::shared_ptr<rws::GenericActionClient>> action_clients_;
 
   rclcpp::Logger get_logger()
   {
@@ -71,6 +73,12 @@ private:
   // Service handlers
   bool call_service(const json & request, json & response_out);
   bool call_external_service(const json & request, json & response_out);
+
+  // Action handlers
+  bool send_action_goal(const json & request, json & response_out);
+  bool cancel_action_goal(const json & request, json & response_out);
+  GenericActionClient::SharedPtr get_or_create_action_client(
+    const std::string & action_name, const std::string & action_type);
 };
 
 }  // namespace rws

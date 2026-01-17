@@ -102,6 +102,14 @@ json ClientHandler::process_message(json & msg)
       handled = unsubscribe_from_topic(msg, response);
     }
 
+    if (op == "send_action_goal") {
+      handled = send_action_goal(msg, response);
+    }
+
+    if (op == "cancel_action_goal") {
+      handled = cancel_action_goal(msg, response);
+    }
+
     if (!handled) {
       RCLCPP_WARN(get_logger(), "Unhadled request: %s", msg.dump().c_str());
     }
@@ -548,6 +556,232 @@ bool ClientHandler::call_external_service(const json & msg, json & response)
   response["op"] = "call_service";
   response["result"] = true;
   return true;
+}
+
+GenericActionClient::SharedPtr ClientHandler::get_or_create_action_client(
+  const std::string & action_name, const std::string & action_type)
+{
+  if (action_clients_.count(action_name) == 0) {
+    action_clients_[action_name] = node_->create_generic_action_client(action_name, action_type);
+  }
+  return action_clients_[action_name];
+}
+
+bool ClientHandler::send_action_goal(const json & msg, json & response)
+{
+  if (!msg.contains("action") || !msg.at("action").is_string()) {
+    response["error"] = "No action name specified";
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  std::string action_name = msg.at("action").get<std::string>();
+
+  if (!msg.contains("action_type") || !msg.at("action_type").is_string()) {
+    response["error"] = "No action_type specified";
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  std::string action_type = msg.at("action_type").get<std::string>();
+  
+  // Get optional feedback flag
+  bool feedback = false;
+  if (msg.contains("feedback") && msg.at("feedback").is_boolean()) {
+    feedback = msg.at("feedback").get<bool>();
+  }
+
+  // Get goal arguments
+  json goal_args = json::object();
+  if (msg.contains("args") && msg.at("args").is_object()) {
+    goal_args = msg.at("args");
+  } else if (msg.contains("goal") && msg.at("goal").is_object()) {
+    goal_args = msg.at("goal");
+  }
+
+  try {
+    auto action_client = get_or_create_action_client(action_name, action_type);
+
+    // Callbacks for goal response, feedback, and result
+    auto goal_response_callback = [this, id = msg.at("id"), action_name](
+      bool accepted, const GenericActionClient::GoalUUID & goal_id) {
+      // Format goal_id as string for rosbridge protocol
+      std::string goal_id_str;
+      for (size_t i = 0; i < goal_id.size(); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+        goal_id_str += buf;
+      }
+
+      json m = {
+        {"op", "action_result"},
+        {"id", id},
+        {"action", action_name},
+        {"goal_id", goal_id_str},
+        {"status", accepted ? "accepted" : "rejected"},
+        {"result", accepted},
+      };
+
+      std::string json_str = m.dump();
+      this->send_message(json_str);
+    };
+
+    GenericActionClient::FeedbackCallback feedback_callback = nullptr;
+    if (feedback) {
+      feedback_callback = [this, id = msg.at("id"), action_name, action_type](
+        const GenericActionClient::GoalUUID & goal_id,
+        GenericActionClient::SharedResponse feedback_msg) {
+        // Format goal_id as string
+        std::string goal_id_str;
+        for (size_t i = 0; i < goal_id.size(); ++i) {
+          char buf[3];
+          snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+          goal_id_str += buf;
+        }
+
+        // Deserialize feedback to JSON
+        json feedback_json = serialized_message_to_json(
+          action_type + "_Feedback", feedback_msg);
+
+        json m = {
+          {"op", "action_feedback"},
+          {"id", id},
+          {"action", action_name},
+          {"goal_id", goal_id_str},
+          {"values", feedback_json},
+        };
+
+        std::string json_str = m.dump();
+        this->send_message(json_str);
+      };
+    }
+
+    auto result_callback = [this, id = msg.at("id"), action_name, action_type](
+      const GenericActionClient::GoalUUID & goal_id,
+      int8_t status,
+      GenericActionClient::SharedResponse result_msg) {
+      // Format goal_id as string
+      std::string goal_id_str;
+      for (size_t i = 0; i < goal_id.size(); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+        goal_id_str += buf;
+      }
+
+      // Deserialize result to JSON
+      json result_json = serialized_message_to_json(
+        action_type + "_Result", result_msg);
+
+      // Map status to string
+      std::string status_str;
+      switch (status) {
+        case 1: status_str = "executing"; break;
+        case 2: status_str = "canceling"; break;
+        case 4: status_str = "succeeded"; break;
+        case 5: status_str = "canceled"; break;
+        case 6: status_str = "aborted"; break;
+        default: status_str = "unknown"; break;
+      }
+
+      json m = {
+        {"op", "action_result"},
+        {"id", id},
+        {"action", action_name},
+        {"goal_id", goal_id_str},
+        {"status", status_str},
+        {"values", result_json},
+        {"result", status == 4},  // true if succeeded
+      };
+
+      std::string json_str = m.dump();
+      this->send_message(json_str);
+    };
+
+    auto goal_id = action_client->async_send_goal(
+      goal_args, goal_response_callback, feedback_callback, result_callback);
+
+    // Format goal_id as string for initial response
+    std::string goal_id_str;
+    for (size_t i = 0; i < goal_id.size(); ++i) {
+      char buf[3];
+      snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+      goal_id_str += buf;
+    }
+
+    response["op"] = "send_action_goal";
+    response["goal_id"] = goal_id_str;
+    response["result"] = true;
+    return true;
+
+  } catch (const std::exception & e) {
+    response["error"] = std::string("Failed to send action goal: ") + e.what();
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+}
+
+bool ClientHandler::cancel_action_goal(const json & msg, json & response)
+{
+  if (!msg.contains("action") || !msg.at("action").is_string()) {
+    response["error"] = "No action name specified";
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  std::string action_name = msg.at("action").get<std::string>();
+
+  if (action_clients_.count(action_name) == 0) {
+    response["error"] = "No active action client for: " + action_name;
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  if (!msg.contains("goal_id") || !msg.at("goal_id").is_string()) {
+    response["error"] = "No goal_id specified";
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  std::string goal_id_str = msg.at("goal_id").get<std::string>();
+  
+  // Parse goal_id from hex string
+  GenericActionClient::GoalUUID goal_id;
+  if (goal_id_str.length() == 32) {  // 16 bytes * 2 hex chars
+    for (size_t i = 0; i < 16; ++i) {
+      goal_id[i] = static_cast<uint8_t>(
+        std::stoul(goal_id_str.substr(i * 2, 2), nullptr, 16));
+    }
+  } else {
+    response["error"] = "Invalid goal_id format";
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
+
+  try {
+    action_clients_[action_name]->async_cancel_goal(
+      goal_id,
+      [this, id = msg.at("id"), action_name, goal_id_str](bool success) {
+        json m = {
+          {"op", "cancel_action_goal"},
+          {"id", id},
+          {"action", action_name},
+          {"goal_id", goal_id_str},
+          {"result", success},
+        };
+
+        std::string json_str = m.dump();
+        this->send_message(json_str);
+      });
+
+    response["op"] = "cancel_action_goal";
+    response["result"] = true;
+    return true;
+
+  } catch (const std::exception & e) {
+    response["error"] = std::string("Failed to cancel action goal: ") + e.what();
+    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
+    return true;
+  }
 }
 
 }  // namespace rws

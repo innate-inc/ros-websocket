@@ -134,6 +134,38 @@ const rosidl_service_type_support_t * get_service_typesupport_handle(
   }
 }
 
+const rosidl_action_type_support_t * get_action_typesupport_handle(
+  const std::string & type, const std::string & typesupport_identifier,
+  rcpputils::SharedLibrary & library)
+{
+  std::string package_name;
+  std::string middle_module;
+  std::string type_name;
+  std::tie(package_name, middle_module, type_name) = extract_type_identifier(type);
+
+  auto mk_error =
+    [&package_name, &type_name](auto reason) {
+      std::stringstream rcutils_dynamic_loading_error;
+      rcutils_dynamic_loading_error
+        << "Something went wrong loading the typesupport library for action type " << package_name
+        << "/" << type_name << ". " << reason;
+      return rcutils_dynamic_loading_error.str();
+    };
+
+  try {
+    std::string symbol_name = typesupport_identifier + "__get_action_type_support_handle__" +
+                              package_name + "__" +
+                              (middle_module.empty() ? "action" : middle_module) + "__" + type_name;
+
+    const rosidl_action_type_support_t * (*get_ts)() = nullptr;
+    // This will throw runtime_error if the symbol was not found.
+    get_ts = reinterpret_cast<decltype(get_ts)>(library.get_symbol(symbol_name));
+    return get_ts();
+  } catch (std::runtime_error &) {
+    throw std::runtime_error{mk_error("Library could not be found.")};
+  }
+}
+
 std::string get_type_from_message_members(const MessageMembers * members)
 {
   std::string s = members->message_namespace_;

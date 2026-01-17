@@ -52,6 +52,9 @@ target_include_directories(websocketpp INTERFACE ${websocketpp_SOURCE_DIR})
 
 set(DEPENDENCIES
   rclcpp
+  rclcpp_action
+  action_msgs
+  unique_identifier_msgs
   ament_index_cpp
 )
 
@@ -138,6 +141,7 @@ if(BUILD_TESTING)
     src/typesupport_helpers.cpp
     src/translate.cpp
     src/serdes.cpp
+    src/generic_action_client.cpp
   )
   ament_target_dependencies(client_handler_test ${DEPENDENCIES})
   target_include_directories(client_handler_test PUBLIC

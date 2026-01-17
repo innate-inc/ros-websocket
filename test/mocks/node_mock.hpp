@@ -4,6 +4,7 @@
 
 #include "generic_publisher_mock.hpp"
 #include "rws/node_interface.hpp"
+#include "rws/generic_action_client.hpp"
 
 class NodeMock : public rws::NodeInterface<GenericPublisherMock>
 {
@@ -28,11 +29,19 @@ public:
      const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group),
     ());
 
+  MOCK_METHOD(
+    rws::GenericActionClient::SharedPtr, create_generic_action_client,
+    (const std::string & action_name, const std::string & action_type,
+     const rcl_action_client_options_t & options),
+    ());
+
   MOCK_METHOD(rclcpp::Time, now, (), (const));
   MOCK_METHOD(
     rclcpp::node_interfaces::NodeBaseInterface::SharedPtr, get_node_base_interface, (), ());
   MOCK_METHOD(
     rclcpp::node_interfaces::NodeGraphInterface::SharedPtr, get_node_graph_interface, (), ());
+  MOCK_METHOD(
+    rclcpp::node_interfaces::NodeLoggingInterface::SharedPtr, get_node_logging_interface, (), ());
   MOCK_METHOD(
     rclcpp::node_interfaces::NodeServicesInterface::SharedPtr, get_node_services_interface, (), ());
   MOCK_METHOD(

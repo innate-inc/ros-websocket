@@ -5,6 +5,7 @@
 #include "rclcpp/time.hpp"
 #include "rws/node_interface.hpp"
 #include "rws/typesupport_helpers.hpp"
+#include "rws/generic_action_client.hpp"
 
 namespace rws
 {
@@ -51,6 +52,22 @@ public:
     return cli;
   }
 
+  GenericActionClient::SharedPtr create_generic_action_client(
+    const std::string & action_name, const std::string & action_type,
+    const rcl_action_client_options_t & options = rcl_action_client_get_default_options())
+  {
+    auto action_client = GenericActionClient::make_shared(
+      node_->get_node_base_interface(),
+      node_->get_node_graph_interface(),
+      node_->get_node_logging_interface(),
+      action_name,
+      action_type,
+      options);
+
+    node_->get_node_waitables_interface()->add_waitable(action_client, nullptr);
+    return action_client;
+  }
+
   rclcpp::Time now() const { return node_->now(); }
   rclcpp::node_interfaces::NodeBaseInterface::SharedPtr get_node_base_interface()
   {
@@ -59,6 +76,10 @@ public:
   rclcpp::node_interfaces::NodeGraphInterface::SharedPtr get_node_graph_interface()
   {
     return node_->get_node_graph_interface();
+  }
+  rclcpp::node_interfaces::NodeLoggingInterface::SharedPtr get_node_logging_interface()
+  {
+    return node_->get_node_logging_interface();
   }
   rclcpp::node_interfaces::NodeServicesInterface::SharedPtr get_node_services_interface()
   {

@@ -19,6 +19,7 @@
 #include <string>
 
 #include "rclcpp/serialized_message.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 
 namespace rws
 {
@@ -26,6 +27,7 @@ namespace rws
 using json = nlohmann::json;
 using SharedMessage = std::shared_ptr<rclcpp::SerializedMessage>;
 using ConstSharedMessage = std::shared_ptr<const rclcpp::SerializedMessage>;
+using rosidl_typesupport_introspection_cpp::MessageMembers;
 
 /// Translate serialized message to json object
 /**
@@ -58,6 +60,14 @@ SharedMessage json_to_serialized_service_request(const std::string & srv_type, c
  * \return Json representation of the service response
  */
 json serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg);
+
+/// Populate a ROS message from JSON using introspection
+/**
+ * \param[in] j Json representation of the message fields
+ * \param[in] members MessageMembers introspection data
+ * \param[out] message Pointer to the pre-allocated ROS message to populate
+ */
+void json_to_ros_message(const json & j, const MessageMembers * members, void * message);
 
 /// Generate textual representation of the message structure
 /**

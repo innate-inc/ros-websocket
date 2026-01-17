@@ -435,4 +435,185 @@ std::string generate_message_meta(const std::string & msg_type, bool rosbridge_c
   return s.str();
 }
 
+// Helper function to set a primitive field value
+template <typename T>
+static void set_field_value(void * field_ptr, const json & value, T default_val)
+{
+  if (value.is_null()) {
+    *static_cast<T *>(field_ptr) = default_val;
+  } else {
+    *static_cast<T *>(field_ptr) = value.get<T>();
+  }
+}
+
+// Helper function to set an array field
+template <typename T>
+static void set_array_field(
+  const MessageMember * member, void * field_ptr, const json & value, T default_val)
+{
+  if (!member->is_array_) {
+    set_field_value<T>(field_ptr, value, default_val);
+  } else if (member->array_size_ && !member->is_upper_bound_) {
+    // Fixed-size array
+    T * data = static_cast<T *>(field_ptr);
+    for (size_t i = 0; i < member->array_size_; i++) {
+      if (value.is_array() && i < value.size() && !value[i].is_null()) {
+        data[i] = value[i].get<T>();
+      } else {
+        data[i] = default_val;
+      }
+    }
+  } else {
+    // Dynamic array (vector)
+    auto * vec = static_cast<std::vector<T> *>(field_ptr);
+    vec->clear();
+    if (value.is_array()) {
+      vec->reserve(value.size());
+      for (const auto & elem : value) {
+        vec->push_back(elem.is_null() ? default_val : elem.get<T>());
+      }
+    }
+  }
+}
+
+// Recursive function to populate message from JSON
+static void populate_message_from_json(
+  const json & j, const MessageMembers * members, void * message);
+
+// Helper for string fields
+static void set_string_field(const MessageMember * member, void * field_ptr, const json & value)
+{
+  if (!member->is_array_) {
+    auto * str = static_cast<std::string *>(field_ptr);
+    *str = value.is_null() ? "" : value.get<std::string>();
+  } else if (member->array_size_ && !member->is_upper_bound_) {
+    // Fixed-size array of strings
+    auto * data = static_cast<std::string *>(field_ptr);
+    for (size_t i = 0; i < member->array_size_; i++) {
+      if (value.is_array() && i < value.size() && !value[i].is_null()) {
+        data[i] = value[i].get<std::string>();
+      } else {
+        data[i] = "";
+      }
+    }
+  } else {
+    // Dynamic array of strings
+    auto * vec = static_cast<std::vector<std::string> *>(field_ptr);
+    vec->clear();
+    if (value.is_array()) {
+      vec->reserve(value.size());
+      for (const auto & elem : value) {
+        vec->push_back(elem.is_null() ? "" : elem.get<std::string>());
+      }
+    }
+  }
+}
+
+static void populate_message_from_json(
+  const json & j, const MessageMembers * members, void * message)
+{
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    const auto * member = members->members_ + i;
+
+    if (strcmp(member->name_, "structure_needs_at_least_one_member") == 0) {
+      continue;
+    }
+
+    void * field_ptr = static_cast<uint8_t *>(message) + member->offset_;
+
+    auto found_field = j.find(member->name_);
+    json field;
+    if (found_field == j.end()) {
+      RCLCPP_INFO(
+        get_logger(), "Field '%s' is not in json, using default", member->name_);
+      // Field not in JSON, leave as default (already initialized)
+      // For nested messages, we still need to recurse with empty JSON
+      if (member->type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
+        if (!member->is_array_) {
+          populate_message_from_json(json::object(), sub_members, field_ptr);
+        }
+      }
+      continue;
+    } else {
+      field = *found_field;
+    }
+
+    switch (member->type_id_) {
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
+        set_array_field<bool>(member, field_ptr, field, false);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
+        set_array_field<uint8_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
+        set_array_field<char>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
+        set_array_field<float>(member, field_ptr, field, 0.0f);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
+        set_array_field<double>(member, field_ptr, field, 0.0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
+        set_array_field<int8_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
+        set_array_field<int16_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
+        set_array_field<uint16_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
+        set_array_field<int32_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
+        set_array_field<uint32_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
+        set_array_field<int64_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
+        set_array_field<uint64_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
+        set_string_field(member, field_ptr, field);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
+        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
+        if (!member->is_array_) {
+          populate_message_from_json(field.is_null() ? json::object() : field, sub_members, field_ptr);
+        } else if (member->array_size_ && !member->is_upper_bound_) {
+          // Fixed-size array of messages
+          for (size_t idx = 0; idx < member->array_size_; idx++) {
+            void * elem_ptr = member->get_function(field_ptr, idx);
+            json elem_json = (field.is_array() && idx < field.size()) ? field[idx] : json::object();
+            populate_message_from_json(elem_json, sub_members, elem_ptr);
+          }
+        } else {
+          // Dynamic array of messages - use resize_function
+          size_t arr_size = field.is_array() ? field.size() : 0;
+          if (member->resize_function) {
+            member->resize_function(field_ptr, arr_size);
+          }
+          for (size_t idx = 0; idx < arr_size; idx++) {
+            void * elem_ptr = member->get_function(field_ptr, idx);
+            populate_message_from_json(field[idx], sub_members, elem_ptr);
+          }
+        }
+        break;
+      }
+      default:
+        RCLCPP_WARN(get_logger(), "Unknown field type: %d", member->type_id_);
+        break;
+    }
+  }
+}
+
+void json_to_ros_message(const json & j, const MessageMembers * members, void * message)
+{
+  populate_message_from_json(j, members, message);
+}
+
 }  // namespace rws

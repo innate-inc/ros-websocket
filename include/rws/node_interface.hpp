@@ -4,6 +4,7 @@
 #include "rclcpp/generic_publisher.hpp"
 #include "rclcpp/generic_subscription.hpp"
 #include "rws/generic_client.hpp"
+#include "rws/generic_action_client.hpp"
 
 namespace rws
 {
@@ -55,9 +56,15 @@ public:
     const std::string & service_name, const std::string & service_type,
     const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group) = 0;
 
+  /// Create a generic action client with a given type.
+  virtual GenericActionClient::SharedPtr create_generic_action_client(
+    const std::string & action_name, const std::string & action_type,
+    const rcl_action_client_options_t & options = rcl_action_client_get_default_options()) = 0;
+
   virtual rclcpp::Time now() const = 0;
   virtual rclcpp::node_interfaces::NodeBaseInterface::SharedPtr get_node_base_interface() = 0;
   virtual rclcpp::node_interfaces::NodeGraphInterface::SharedPtr get_node_graph_interface() = 0;
+  virtual rclcpp::node_interfaces::NodeLoggingInterface::SharedPtr get_node_logging_interface() = 0;
   virtual rclcpp::node_interfaces::NodeServicesInterface::SharedPtr
   get_node_services_interface() = 0;
   virtual rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr get_node_topics_interface() = 0;

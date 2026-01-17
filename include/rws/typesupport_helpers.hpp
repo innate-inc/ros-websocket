@@ -21,6 +21,7 @@
 #include <tuple>
 
 #include "rcpputils/shared_library.hpp"
+#include "rosidl_runtime_c/action_type_support_struct.h"
 #include "rosidl_runtime_cpp/service_type_support_decl.hpp"
 #include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 
@@ -52,6 +53,18 @@ std::shared_ptr<rcpputils::SharedLibrary> get_typesupport_library(
  * \return A type support handle for the service
  */
 const rosidl_service_type_support_t * get_service_typesupport_handle(
+  const std::string & type, const std::string & typesupport_identifier,
+  rcpputils::SharedLibrary & library);
+
+/// Extract the action type support handle from the library.
+/**
+ * The library needs to match the action type. The shared library must stay loaded for the lifetime of the result.
+ * \param[in] type The action type, e.g. "example_interfaces/action/Fibonacci"
+ * \param[in] typesupport_identifier Type support identifier, typically "rosidl_typesupport_cpp"
+ * \param[in] library The shared type support library
+ * \return A type support handle for the action
+ */
+const rosidl_action_type_support_t * get_action_typesupport_handle(
   const std::string & type, const std::string & typesupport_identifier,
   rcpputils::SharedLibrary & library);
 
