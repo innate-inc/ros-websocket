@@ -54,21 +54,34 @@ public:
     std::string service_type, rcl_client_options_t & client_options)
   : rclcpp::ClientBase(node_base, node_graph)
   {
-    srv_ts_lib_ = rclcpp::get_typesupport_library(service_type, rws::ts_identifier);
+    // Load FastRTPS typesupport for service client registration (required by rmw_zenoh)
+    srv_ts_lib_ = rclcpp::get_typesupport_library(service_type, rws::ts_identifier_srv);
     srv_ts_hdl_ =
-      rws::get_service_typesupport_handle(service_type, rws::ts_identifier, *srv_ts_lib_);
-    auto srv_members = static_cast<const ServiceMembers *>(srv_ts_hdl_->data);
+      rws::get_service_typesupport_handle(service_type, rws::ts_identifier_srv, *srv_ts_lib_);
+
+    // Also load introspection typesupport for member introspection (different structure than FastRTPS)
+    srv_intro_lib_ = rclcpp::get_typesupport_library(service_type, rws::ts_identifier);
+    srv_intro_hdl_ = rws::get_service_typesupport_handle(service_type, rws::ts_identifier, *srv_intro_lib_);
+    auto srv_members = static_cast<const ServiceMembers *>(srv_intro_hdl_->data);
 
     auto request_members = srv_members->request_members_;
     auto request_type = get_type_from_message_members(request_members);
+    // Use introspection typesupport for member info
     req_ts_lib_ = rclcpp::get_typesupport_library(request_type, rws::ts_identifier);
     req_ts_hdl_ = rclcpp::get_typesupport_handle(request_type, rws::ts_identifier, *req_ts_lib_);
+    // Use FastRTPS typesupport for serialization (required by rmw_zenoh)
+    req_ts_srv_lib_ = rclcpp::get_typesupport_library(request_type, rws::ts_identifier_srv);
+    req_ts_srv_hdl_ = rclcpp::get_typesupport_handle(request_type, rws::ts_identifier_srv, *req_ts_srv_lib_);
 
     auto response_members = srv_members->response_members_;
     auto response_type = get_type_from_message_members(response_members);
     res_ts_lib_ = rclcpp::get_typesupport_library(response_type, rws::ts_identifier);
     res_ts_hdl_ = rclcpp::get_typesupport_handle(response_type, rws::ts_identifier, *res_ts_lib_);
+    // Use FastRTPS typesupport for serialization (required by rmw_zenoh)
+    res_ts_srv_lib_ = rclcpp::get_typesupport_library(response_type, rws::ts_identifier_srv);
+    res_ts_srv_hdl_ = rclcpp::get_typesupport_handle(response_type, rws::ts_identifier_srv, *res_ts_srv_lib_);
 
+    // Use FastRTPS typesupport handle for rcl_client_init (required by rmw_zenoh)
     rcl_ret_t ret = rcl_client_init(
       this->get_client_handle().get(), this->get_rcl_node_handle(), srv_ts_hdl_,
       service_name.c_str(), &client_options);
@@ -89,7 +102,7 @@ public:
 
   std::shared_ptr<void> create_response() override
   {
-    auto srv_members = static_cast<const ServiceMembers *>(srv_ts_hdl_->data);
+    auto srv_members = static_cast<const ServiceMembers *>(srv_intro_hdl_->data);
     return allocate_message(srv_members->response_members_);
   }
 
@@ -105,10 +118,12 @@ public:
     int64_t sequence_number = request_header->sequence_number;
 
     auto ser_response = std::make_shared<rclcpp::SerializedMessage>();
+    // Use FastRTPS typesupport for serialization (required by rmw_zenoh)
     rmw_ret_t r =
-      rmw_serialize(response.get(), res_ts_hdl_, &ser_response->get_rcl_serialized_message());
+      rmw_serialize(response.get(), res_ts_srv_hdl_, &ser_response->get_rcl_serialized_message());
     if (r != RMW_RET_OK) {
-      RCUTILS_LOG_ERROR_NAMED("rws", "Failed to serialize service response. Ignoring...");
+      RCUTILS_LOG_ERROR_NAMED("rws", "Failed to serialize service response: %s", rcutils_get_error_string().str);
+      rcutils_reset_error();
       return;
     }
 
@@ -139,14 +154,15 @@ public:
     std::lock_guard<std::mutex> lock(pending_requests_mutex_);
     int64_t sequence_number;
 
-    auto srv_members = static_cast<const ServiceMembers *>(srv_ts_hdl_->data);
+    auto srv_members = static_cast<const ServiceMembers *>(srv_intro_hdl_->data);
     auto req_members = srv_members->request_members_;
     auto buf = allocate_message(req_members);
 
     if(req_members->member_count_ > 1 ||
        std::strcmp(req_members->members_[0].name_, "structure_needs_at_least_one_member") != 0) {
       const rmw_serialized_message_t * sm = &request->get_rcl_serialized_message();
-      rmw_ret_t rmw_ret = rmw_deserialize(sm, req_ts_hdl_, buf.get());
+      // Use FastRTPS typesupport for deserialization (required by rmw_zenoh)
+      rmw_ret_t rmw_ret = rmw_deserialize(sm, req_ts_srv_hdl_, buf.get());
       if(RMW_RET_OK != rmw_ret) {
         rclcpp::exceptions::throw_from_rcl_error(rmw_ret, "failed to deserialize request");
       }
@@ -171,10 +187,16 @@ private:
   std::mutex pending_requests_mutex_;
   std::shared_ptr<rcpputils::SharedLibrary> srv_ts_lib_;
   const rosidl_service_type_support_t * srv_ts_hdl_;
+  std::shared_ptr<rcpputils::SharedLibrary> srv_intro_lib_;
+  const rosidl_service_type_support_t * srv_intro_hdl_;
   std::shared_ptr<rcpputils::SharedLibrary> req_ts_lib_;
   const rosidl_message_type_support_t * req_ts_hdl_;
+  std::shared_ptr<rcpputils::SharedLibrary> req_ts_srv_lib_;
+  const rosidl_message_type_support_t * req_ts_srv_hdl_;
   std::shared_ptr<rcpputils::SharedLibrary> res_ts_lib_;
   const rosidl_message_type_support_t * res_ts_hdl_;
+  std::shared_ptr<rcpputils::SharedLibrary> res_ts_srv_lib_;
+  const rosidl_message_type_support_t * res_ts_srv_hdl_;
 };
 
 }  // namespace rws

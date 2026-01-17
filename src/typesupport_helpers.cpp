@@ -26,6 +26,7 @@
 namespace rws
 {
 const char * ts_identifier = "rosidl_typesupport_introspection_cpp";
+const char * ts_identifier_srv = "rosidl_typesupport_fastrtps_cpp";
 namespace
 {
 
@@ -136,7 +137,16 @@ const rosidl_service_type_support_t * get_service_typesupport_handle(
 std::string get_type_from_message_members(const MessageMembers * members)
 {
   std::string s = members->message_namespace_;
-  s.replace(s.find("::"), sizeof("::") - 1, "/");
+  // Handle both introspection (with "::") and fastrtps (with "__") namespace formats
+  auto pos = s.find("::");
+  if (pos != std::string::npos) {
+    s.replace(pos, 2, "/");
+  } else {
+    pos = s.find("__");
+    if (pos != std::string::npos) {
+      s.replace(pos, 2, "/");
+    }
+  }
   return s + "/" + members->message_name_;
 }
 

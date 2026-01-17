@@ -235,12 +235,6 @@ bool ClientHandler::unsubscribe_from_topic(const json & msg, json & response)
 bool ClientHandler::advertise_topic(const json & msg, json & response)
 {
   response["op"] = "advertise_response";
-  if (!msg.contains("type") || !msg.at("type").is_string()) {
-    response["result"] = false;
-    response["error"] = "No type specified";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-    return true;
-  }
 
   if (!msg.contains("topic") || !msg.at("topic").is_string()) {
     response["result"] = false;
@@ -250,7 +244,22 @@ bool ClientHandler::advertise_topic(const json & msg, json & response)
   }
 
   std::string topic = msg.at("topic");
-  std::string type = rws::message_type_to_ros2_style(msg.at("type"));
+  std::string type;
+
+  if (msg.contains("type") && msg.at("type").is_string() && !msg.at("type").get<std::string>().empty()) {
+    type = rws::message_type_to_ros2_style(msg.at("type"));
+  } else {
+    // Look up type from existing topics
+    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+    if (topics.find(topic) != topics.end() && !topics[topic].empty()) {
+      type = topics[topic][0];
+    } else {
+      response["result"] = false;
+      response["error"] = "No type specified and topic not found for type lookup";
+      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
+      return true;
+    }
+  }
   size_t history_depth = 10;
   if (msg.contains("history_depth") && msg.at("history_depth").is_number()) {
     history_depth = msg.at("history_depth");
@@ -291,7 +300,7 @@ bool ClientHandler::publish_to_topic(const json & msg, json & response)
   response["op"] = "publish_response";
 
   if (!msg.contains("topic")) {
-    response["false"] = true;
+    response["result"] = false;
     response["error"] = "No topic specified";
     RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
     return true;
@@ -299,17 +308,22 @@ bool ClientHandler::publish_to_topic(const json & msg, json & response)
 
   std::string topic = msg.at("topic");
 
-  if (publishers_.count(topic) > 0) {
-    json msg_json = msg.at("msg");
-    std::string type = publisher_type_[topic];
-    auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
-    publisher_cb_[topic](serialized_msg);
-    response["result"] = true;
-  } else {
-    response["result"] = false;
-    response["error"] = "Topic was not advertised";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
+  // Auto-advertise if not already advertised
+  if (publishers_.count(topic) == 0) {
+    json advertise_response;
+    if (!advertise_topic(msg, advertise_response) || !advertise_response["result"].get<bool>()) {
+      response["result"] = false;
+      response["error"] = advertise_response.value("error", "Failed to auto-advertise topic");
+      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
+      return true;
+    }
   }
+
+  json msg_json = msg.at("msg");
+  std::string type = publisher_type_[topic];
+  auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
+  publisher_cb_[topic](serialized_msg);
+  response["result"] = true;
 
   return true;
 }

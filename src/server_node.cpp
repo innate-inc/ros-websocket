@@ -284,7 +284,7 @@ private:
       }
       action_cond_.notify_one();
     } catch (const std::exception & e) {
-      RCLCPP_WARN(get_logger(), "Failed to parse JSON: %s", e.what());
+      RCLCPP_WARN(get_logger(), "Failed to process message: %s", e.what());
     }
   }
 

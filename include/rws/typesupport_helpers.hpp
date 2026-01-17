@@ -29,7 +29,8 @@ namespace rws
 
 using rosidl_typesupport_introspection_cpp::MessageMembers;
 
-extern const char * ts_identifier;
+extern const char * ts_identifier;  // introspection typesupport for message serialization
+extern const char * ts_identifier_srv;  // fastrtps typesupport for service clients (rmw_zenoh)
 
 /// Load the type support library for the given type.
 /// This is a thread-safe version of rclcpp::get_typesupport_library.
