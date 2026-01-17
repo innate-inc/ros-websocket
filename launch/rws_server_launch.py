@@ -29,6 +29,7 @@ def generate_launch_description():
         executable='rws_server',
         name='rws_server',
         output='screen',
+        arguments=['--ros-args', '--log-level', 'debug'],
         parameters=[{
             'port': LaunchConfiguration('port'),
             'rosbridge_compatible': LaunchConfiguration('rosbridge_compatible'),

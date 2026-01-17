@@ -481,12 +481,22 @@ bool ClientHandler::call_service(const json & msg, json & response)
 bool ClientHandler::call_external_service(const json & msg, json & response)
 {
   std::string service_name = msg.at("service");
-  std::string service_type = msg.at("type");
-
   std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
-  if (services.find(service_name) == services.end()) {
+  auto service_it = services.find(service_name);
+  if (service_it == services.end()) {
     RCLCPP_ERROR(get_logger(), "Service not found: %s", service_name.c_str());
     return false;
+  }
+
+  std::string service_type;
+  if (msg.contains("type") && msg.at("type").is_string() && !msg.at("type").get<std::string>().empty()) {
+    service_type = msg.at("type").get<std::string>();
+  } else {
+    if (service_it->second.empty()) {
+      RCLCPP_ERROR(get_logger(), "Service has no advertised type: %s", service_name.c_str());
+      return false;
+    }
+    service_type = service_it->second.front();
   }
 
   if (clients_.count(service_name) == 0) {
