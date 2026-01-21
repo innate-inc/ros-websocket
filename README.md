@@ -52,6 +52,8 @@ rws_server_node = Node(
 | unadvertise_service | - | + | Stop advertising external service |
 | service_request | - | + | Request to external service |
 | service_response | - | + | Response from external service |
+| send_action_goal | + | + | Send action goal |
+| cancel_action_goal | + | + | Cancel action goal |
 
 ### Fragmentation
 **Message fragmentation is not supported in RWS**
