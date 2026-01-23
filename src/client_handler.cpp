@@ -63,6 +63,9 @@ ClientHandler::~ClientHandler()
   for (auto it = publishers_.begin(); it != publishers_.end(); ++it) {
     it->second();
   }
+   RCLCPP_INFO(
+    get_logger(), "Done Destroying client %s(%s)", std::to_string(client_id_).c_str(),
+    string_thread_id().c_str()); 
 }
 
 json ClientHandler::process_message(json & msg)

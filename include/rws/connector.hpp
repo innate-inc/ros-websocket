@@ -192,7 +192,6 @@ private:
 
     {
       std::lock_guard<std::mutex> guard(subscribers_mutex_);
-      std::fflush(stderr);
       for (auto & sub : subscribers_) {
         if (sub.params == params &&
             (params.throttle_rate.nanoseconds() == 0 || (sub.last_sent + params.throttle_rate) < node_->now())) {
@@ -205,7 +204,6 @@ private:
     // Call callbacks (locks already held, will release when pending goes out of scope)
     for (auto & p : pending) {
       p.callback(params, message);
-      std::fflush(stderr);
     }
   }
 };

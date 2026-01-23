@@ -117,6 +117,7 @@ public:
 
   void shutdown()
   {
+      RCLCPP_WARN(get_logger(), "Server is shutting down");
     if (!running_) {
       return;
     }
