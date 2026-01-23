@@ -21,6 +21,8 @@ if(NOT rapidjson_POPULATED)
 endif()
 add_library(rapidjson INTERFACE)
 target_include_directories(rapidjson INTERFACE ${rapidjson_SOURCE_DIR}/include)
+# Suppress RapidJSON internal memcpy warnings (known issue with modern compilers)
+target_compile_options(rapidjson INTERFACE -Wno-class-memaccess)
 # /RAPIDJSON
 
 ### Fetch ASIO at configure time

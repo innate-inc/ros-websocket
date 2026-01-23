@@ -17,6 +17,9 @@
 #include <chrono>
 #include <cstdio>
 #include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
+#include <rapidjson/writer.h>
+#include <rapidjson/stringbuffer.h>
 
 #include "rclcpp/logger.hpp"
 #include "rclcpp/qos.hpp"
@@ -771,6 +774,512 @@ bool ClientHandler::cancel_action_goal(const json & msg, json & response)
     RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
     return true;
   }
+}
+
+// ============================================================================
+// RapidJSON implementations below
+// ============================================================================
+
+// Helper to safely get string from RapidJSON
+static inline const char* get_string(const rapidjson::Value& v, const char* key, const char* def = "") {
+  if (v.HasMember(key) && v[key].IsString()) return v[key].GetString();
+  return def;
+}
+
+static inline bool get_bool(const rapidjson::Value& v, const char* key, bool def = false) {
+  if (v.HasMember(key) && v[key].IsBool()) return v[key].GetBool();
+  return def;
+}
+
+static inline int64_t get_int(const rapidjson::Value& v, const char* key, int64_t def = 0) {
+  if (v.HasMember(key) && v[key].IsInt64()) return v[key].GetInt64();
+  if (v.HasMember(key) && v[key].IsInt()) return v[key].GetInt();
+  return def;
+}
+
+static inline bool has_string(const rapidjson::Value& v, const char* key) {
+  return v.HasMember(key) && v[key].IsString();
+}
+
+std::string ClientHandler::process_message_rapid(const char* data, size_t length)
+{
+  rapidjson::Document doc;
+  doc.Parse(data, length);
+  
+  rapidjson::StringBuffer buffer;
+  buffer.Reserve(512);
+  RapidWriter writer(buffer);
+  
+  if (doc.HasParseError()) {
+    writer.StartObject();
+    writer.Key("error"); writer.String("JSON parse error");
+    writer.Key("result"); writer.Bool(false);
+    writer.EndObject();
+    return std::string(buffer.GetString(), buffer.GetSize());
+  }
+  
+  if (!doc.HasMember("op") || !doc["op"].IsString()) {
+    writer.StartObject();
+    if (doc.HasMember("id")) {
+      writer.Key("id");
+      if (doc["id"].IsString()) writer.String(doc["id"].GetString());
+      else if (doc["id"].IsInt()) writer.Int(doc["id"].GetInt());
+    }
+    writer.Key("error"); writer.String("No op specified");
+    writer.Key("result"); writer.Bool(false);
+    writer.EndObject();
+    return std::string(buffer.GetString(), buffer.GetSize());
+  }
+  
+  const char* op = doc["op"].GetString();
+  bool handled = false;
+  
+  if (strcmp(op, "subscribe") == 0) {
+    handled = subscribe_to_topic_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "unsubscribe") == 0) {
+    handled = unsubscribe_from_topic_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "advertise") == 0) {
+    handled = advertise_topic_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "unadvertise") == 0) {
+    handled = unadvertise_topic_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "publish") == 0) {
+    handled = publish_to_topic_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "call_service") == 0) {
+    handled = call_service_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "send_action_goal") == 0) {
+    handled = send_action_goal_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "cancel_action_goal") == 0) {
+    handled = cancel_action_goal_rapid(doc, buffer, writer);
+  }
+  
+  if (!handled) {
+    RCLCPP_WARN(get_logger(), "Unhandled request op: %s", op);
+    // Return empty response for unhandled
+    buffer.Clear();
+    writer.Reset(buffer);
+    writer.StartObject();
+    if (doc.HasMember("id")) {
+      writer.Key("id");
+      if (doc["id"].IsString()) writer.String(doc["id"].GetString());
+      else if (doc["id"].IsInt()) writer.Int(doc["id"].GetInt());
+    }
+    writer.Key("result"); writer.Bool(false);
+    writer.Key("error"); writer.String("Unknown operation");
+    writer.EndObject();
+  }
+  
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  
+  // Copy id if present
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+  }
+  
+  w.Key("op"); w.String("subscribe_response");
+  
+  if (!has_string(msg, "topic")) {
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String("No topic specified");
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No topic specified");
+    return true;
+  }
+  
+  std::string topic = msg["topic"].GetString();
+  std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+  
+  if (topics.find(topic) == topics.end()) {
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String(("Topic " + topic + " not found").c_str());
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "Topic %s not found", topic.c_str());
+    return true;
+  }
+  
+  size_t history_depth = 10;
+  if (msg.HasMember("history_depth") && msg["history_depth"].IsNumber()) {
+    history_depth = msg["history_depth"].GetInt();
+  } else if (msg.HasMember("queue_size") && msg["queue_size"].IsNumber()) {
+    history_depth = msg["queue_size"].GetInt();
+  }
+  
+  rclcpp::Duration throttle_rate(0, 0);
+  if (msg.HasMember("throttle_rate") && msg["throttle_rate"].IsNumber()) {
+    size_t throttle_rate_ms = msg["throttle_rate"].GetInt();
+    throttle_rate = rclcpp::Duration(0, throttle_rate_ms * 1000000);
+  }
+  
+  std::string compression = has_string(msg, "compression") ? msg["compression"].GetString() : "none";
+  
+  auto sub_type = topics[topic][0];
+  if (subscriptions_.count(topic) == 0) {
+    topic_params params(topic, sub_type, history_depth, compression, throttle_rate);
+    subscriptions_[topic] = connector_->subscribe_to_topic(
+      client_id_, params, std::bind(&ClientHandler::subscription_callback, this, std::placeholders::_1, std::placeholders::_2));
+    
+    w.Key("type"); w.String(sub_type.c_str());
+    w.Key("result"); w.Bool(true);
+  } else {
+    w.Key("result"); w.Bool(true);  // Already subscribed
+  }
+  
+  w.EndObject();
+  return true;
+}
+
+bool ClientHandler::unsubscribe_from_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+  }
+  
+  w.Key("op"); w.String("unsubscribe_response");
+  
+  if (has_string(msg, "topic")) {
+    std::string topic = msg["topic"].GetString();
+    if (subscriptions_.count(topic) > 0) {
+      subscriptions_[topic]();
+      subscriptions_.erase(topic);
+      w.Key("result"); w.Bool(true);
+    } else {
+      w.Key("result"); w.Bool(false);
+    }
+  } else {
+    w.Key("result"); w.Bool(false);
+  }
+  
+  w.EndObject();
+  return true;
+}
+
+bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+  }
+  
+  w.Key("op"); w.String("advertise_response");
+  
+  if (!has_string(msg, "topic")) {
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String("No topic specified");
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No topic specified");
+    return true;
+  }
+  
+  std::string topic = msg["topic"].GetString();
+  std::string type;
+  
+  if (has_string(msg, "type") && strlen(msg["type"].GetString()) > 0) {
+    type = rws::message_type_to_ros2_style(msg["type"].GetString());
+  } else {
+    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+    if (topics.find(topic) != topics.end() && !topics[topic].empty()) {
+      type = topics[topic][0];
+    } else {
+      w.Key("result"); w.Bool(false);
+      w.Key("error"); w.String("No type specified and topic not found for type lookup");
+      w.EndObject();
+      RCLCPP_ERROR(get_logger(), "No type specified and topic not found for type lookup");
+      return true;
+    }
+  }
+  
+  size_t history_depth = 10;
+  if (msg.HasMember("history_depth") && msg["history_depth"].IsNumber()) {
+    history_depth = msg["history_depth"].GetInt();
+  } else if (msg.HasMember("queue_size") && msg["queue_size"].IsNumber()) {
+    history_depth = msg["queue_size"].GetInt();
+  }
+  
+  bool latch = get_bool(msg, "latch", false);
+  topic_params params(topic, type, history_depth, latch);
+  
+  if (publishers_.count(topic) == 0) {
+    publishers_[topic] = connector_->advertise_topic(client_id_, params, publisher_cb_[topic]);
+    publisher_type_[topic] = type;
+    w.Key("result"); w.Bool(true);
+  } else {
+    w.Key("result"); w.Bool(true);
+  }
+  
+  w.EndObject();
+  return true;
+}
+
+bool ClientHandler::unadvertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+  }
+  
+  w.Key("op"); w.String("unadvertise_response");
+  
+  if (has_string(msg, "topic")) {
+    std::string topic = msg["topic"].GetString();
+    if (publishers_.count(topic) > 0) {
+      publishers_[topic]();
+      publishers_.erase(topic);
+      publisher_cb_.erase(topic);
+      publisher_type_.erase(topic);
+      w.Key("result"); w.Bool(true);
+    } else {
+      w.Key("result"); w.Bool(false);
+    }
+  } else {
+    w.Key("result"); w.Bool(false);
+  }
+  
+  w.EndObject();
+  return true;
+}
+
+bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+  }
+  
+  w.Key("op"); w.String("publish_response");
+  
+  if (!has_string(msg, "topic")) {
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String("No topic specified");
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No topic specified");
+    return true;
+  }
+  
+  std::string topic = msg["topic"].GetString();
+  
+  // Auto-advertise if not already advertised
+  if (publishers_.count(topic) == 0) {
+    // Need to call advertise first - reuse the rapid version
+    rapidjson::StringBuffer adv_buf;
+    RapidWriter adv_w(adv_buf);
+    if (!advertise_topic_rapid(msg, adv_buf, adv_w)) {
+      w.Key("result"); w.Bool(false);
+      w.Key("error"); w.String("Failed to auto-advertise topic");
+      w.EndObject();
+      return true;
+    }
+    // Check if we actually advertised (publisher should exist now)
+    if (publishers_.count(topic) == 0) {
+      w.Key("result"); w.Bool(false);
+      w.Key("error"); w.String("Failed to auto-advertise topic");
+      w.EndObject();
+      return true;
+    }
+  }
+  
+  if (!msg.HasMember("msg") || !msg["msg"].IsObject()) {
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String("No msg specified");
+    w.EndObject();
+    return true;
+  }
+  
+  // Convert rapidjson Value to nlohmann::json for serialization
+  // (keep using nlohmann for the ROS message serialization path for now)
+  rapidjson::StringBuffer msg_buf;
+  rapidjson::Writer<rapidjson::StringBuffer> msg_writer(msg_buf);
+  msg["msg"].Accept(msg_writer);
+  
+  json msg_json = json::parse(msg_buf.GetString());
+  std::string type = publisher_type_[topic];
+  auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
+  publisher_cb_[topic](serialized_msg);
+  
+  w.Key("result"); w.Bool(true);
+  w.EndObject();
+  return true;
+}
+
+bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
+{
+  if (!has_string(msg, "service")) {
+    w.StartObject();
+    if (msg.HasMember("id")) {
+      w.Key("id");
+      if (msg["id"].IsString()) w.String(msg["id"].GetString());
+      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+    }
+    w.Key("error"); w.String("No service specified");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No service specified");
+    return true;
+  }
+  
+  std::string service = msg["service"].GetString();
+  
+  RCLCPP_DEBUG(get_logger(), "call_service_rapid: %s", service.c_str());
+  
+  // Handle rosapi services inline
+  if (service == "/rosapi/topics_and_raw_types" || service == "/rosapi/topics") {
+    w.StartObject();
+    if (msg.HasMember("id")) {
+      w.Key("id");
+      if (msg["id"].IsString()) w.String(msg["id"].GetString());
+      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+    }
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    
+    w.Key("values");
+    w.StartObject();
+    
+    w.Key("topics"); w.StartArray();
+    w.Key("types"); w.StartArray();
+    
+    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+    std::vector<std::pair<std::string, std::string>> topic_list;
+    for (auto& t : topics) {
+      topic_list.push_back({t.first, t.second[0]});
+    }
+    
+    // Write topics array
+    buf.Clear();
+    w.Reset(buf);
+    w.StartObject();
+    if (msg.HasMember("id")) {
+      w.Key("id");
+      if (msg["id"].IsString()) w.String(msg["id"].GetString());
+      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+    }
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("values");
+    w.StartObject();
+    
+    w.Key("topics");
+    w.StartArray();
+    for (auto& t : topic_list) w.String(t.first.c_str());
+    w.EndArray();
+    
+    w.Key("types");
+    w.StartArray();
+    for (auto& t : topic_list) w.String(t.second.c_str());
+    w.EndArray();
+    
+    if (service == "/rosapi/topics_and_raw_types") {
+      w.Key("typedefs_full_text");
+      w.StartArray();
+      for (auto& t : topic_list) {
+        w.String(rws::generate_message_meta(t.second, rosbridge_compatible_).c_str());
+      }
+      w.EndArray();
+    }
+    
+    w.EndObject();  // values
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  if (service == "/rosapi/nodes") {
+    w.StartObject();
+    if (msg.HasMember("id")) {
+      w.Key("id");
+      if (msg["id"].IsString()) w.String(msg["id"].GetString());
+      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+    }
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("values");
+    w.StartObject();
+    w.Key("nodes");
+    w.StartArray();
+    for (auto& n : node_->get_node_names()) w.String(n.c_str());
+    w.EndArray();
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  // For other services, fall back to nlohmann parsing (external service calls are rare)
+  // Convert to nlohmann::json and use old path
+  rapidjson::StringBuffer full_buf;
+  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
+  msg.Accept(full_w);
+  
+  json nlohmann_msg = json::parse(full_buf.GetString());
+  json nlohmann_response;
+  call_service(nlohmann_msg, nlohmann_response);
+  
+  std::string resp_str = nlohmann_response.dump();
+  buf.Clear();
+  // Copy the response string directly
+  for (size_t i = 0; i < resp_str.size(); i++) {
+    buf.Put(resp_str[i]);
+  }
+  
+  return true;
+}
+
+bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & /*w*/)
+{
+  // Actions are rare, fall back to nlohmann
+  rapidjson::StringBuffer full_buf;
+  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
+  msg.Accept(full_w);
+  
+  json nlohmann_msg = json::parse(full_buf.GetString());
+  json nlohmann_response;
+  send_action_goal(nlohmann_msg, nlohmann_response);
+  
+  std::string resp_str = nlohmann_response.dump();
+  buf.Clear();
+  for (size_t i = 0; i < resp_str.size(); i++) {
+    buf.Put(resp_str[i]);
+  }
+  
+  return true;
+}
+
+bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & /*w*/)
+{
+  // Actions are rare, fall back to nlohmann
+  rapidjson::StringBuffer full_buf;
+  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
+  msg.Accept(full_w);
+  
+  json nlohmann_msg = json::parse(full_buf.GetString());
+  json nlohmann_response;
+  cancel_action_goal(nlohmann_msg, nlohmann_response);
+  
+  std::string resp_str = nlohmann_response.dump();
+  buf.Clear();
+  for (size_t i = 0; i < resp_str.size(); i++) {
+    buf.Put(resp_str[i]);
+  }
+  
+  return true;
 }
 
 }  // namespace rws

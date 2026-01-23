@@ -277,9 +277,20 @@ private:
 
     auto client_node = cd->node;
     try {
-      auto json_msg = json::parse(a.msg->get_payload());
-      auto response = client_node->process_message(json_msg);
-      std::string response_str = response.dump();
+      // Toggle for benchmarking: true = RapidJSON (fast), false = nlohmann/json (old)
+      constexpr bool use_rapidjson = true;
+      
+      std::string response_str;
+      if constexpr (use_rapidjson) {
+        // RapidJSON fast path
+        const std::string& payload = a.msg->get_payload();
+        response_str = client_node->process_message_rapid(payload.data(), payload.size());
+      } else {
+        // Old nlohmann path
+        auto json_msg = json::parse(a.msg->get_payload());
+        auto response = client_node->process_message(json_msg);
+        response_str = response.dump();
+      }
 
       {
         std::lock_guard<std::mutex> guard(action_lock_);
