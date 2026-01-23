@@ -69,6 +69,15 @@ json serialized_service_response_to_json(const std::string & srv_type, ConstShar
  */
 void json_to_ros_message(const json & j, const MessageMembers * members, void * message);
 
+/// Fast serialize ROS message to JSON string for publish op using RapidJSON
+/**
+ * \param[in] topic Topic name
+ * \param[in] msg_type Message type, e.g. "std_msgs/msg/String"
+ * \param[in] msg Serialized message
+ * \return Complete JSON string: {"op":"publish","topic":"...","msg":{...}}
+ */
+std::string build_publish_message(const std::string & topic, const std::string & msg_type, ConstSharedMessage msg);
+
 /// Generate textual representation of the message structure
 /**
  * \param[in] msg_type Message type, e.g. "std_msgs/msg/String"

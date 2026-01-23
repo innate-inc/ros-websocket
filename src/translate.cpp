@@ -14,6 +14,9 @@
 
 #include "rws/translate.hpp"
 
+#include <rapidjson/writer.h>
+#include <rapidjson/stringbuffer.h>
+
 #include "rclcpp/rclcpp.hpp"
 #include "rosidl_typesupport_introspection_cpp/field_types.hpp"
 #include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
@@ -158,6 +161,177 @@ json serialized_message_to_json(const std::string & msg_type, ConstSharedMessage
   serialized_message_to_json(deser, members, j);
 
   return j;
+}
+
+// RapidJSON-based fast serialization
+using RapidWriter = rapidjson::Writer<rapidjson::StringBuffer>;
+
+template <typename T>
+static void deserialize_field_rapid(cycdeser & deser, const MessageMember * member, RapidWriter & writer)
+{
+  T val;
+  if (!member->is_array_) {
+    deser >> val;
+    if constexpr (std::is_same_v<T, bool>) {
+      writer.Bool(val);
+    } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
+      writer.Int(val);
+    } else if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
+      writer.Uint(val);
+    } else if constexpr (std::is_same_v<T, int64_t>) {
+      writer.Int64(val);
+    } else if constexpr (std::is_same_v<T, uint64_t>) {
+      writer.Uint64(val);
+    } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+      writer.Double(val);
+    } else if constexpr (std::is_same_v<T, char>) {
+      writer.Int(static_cast<int>(val));
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
+    } else if constexpr (std::is_same_v<T, std::wstring>) {
+      // Convert wstring to string (simplified)
+      std::string narrow(val.begin(), val.end());
+      writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+    }
+  } else {
+    writer.StartArray();
+    size_t count;
+    if (member->array_size_ && !member->is_upper_bound_) {
+      count = member->array_size_;
+    } else {
+      uint32_t seq_size;
+      deser >> seq_size;
+      count = seq_size;
+    }
+    for (size_t i = 0; i < count; i++) {
+      deser >> val;
+      if constexpr (std::is_same_v<T, bool>) {
+        writer.Bool(val);
+      } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
+        writer.Int(val);
+      } else if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
+        writer.Uint(val);
+      } else if constexpr (std::is_same_v<T, int64_t>) {
+        writer.Int64(val);
+      } else if constexpr (std::is_same_v<T, uint64_t>) {
+        writer.Uint64(val);
+      } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        writer.Double(val);
+      } else if constexpr (std::is_same_v<T, char>) {
+        writer.Int(static_cast<int>(val));
+      } else if constexpr (std::is_same_v<T, std::string>) {
+        writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
+      } else if constexpr (std::is_same_v<T, std::wstring>) {
+        std::string narrow(val.begin(), val.end());
+        writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+      }
+    }
+    writer.EndArray();
+  }
+}
+
+static void serialized_message_to_json_rapid(cycdeser & deser, const MessageMembers * members, RapidWriter & writer)
+{
+  writer.StartObject();
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    const auto * member = members->members_ + i;
+    writer.Key(member->name_);
+
+    switch (member->type_id_) {
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
+        deserialize_field_rapid<bool>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
+        deserialize_field_rapid<uint8_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
+        deserialize_field_rapid<char>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
+        deserialize_field_rapid<float>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
+        deserialize_field_rapid<double>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
+        deserialize_field_rapid<int8_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
+        deserialize_field_rapid<int16_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
+        deserialize_field_rapid<uint16_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
+        deserialize_field_rapid<int32_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
+        deserialize_field_rapid<uint32_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
+        deserialize_field_rapid<int64_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
+        deserialize_field_rapid<uint64_t>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
+        deserialize_field_rapid<std::string>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_WSTRING:
+        deserialize_field_rapid<std::wstring>(deser, member, writer);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
+        auto sub_members = (const MessageMembers *)member->members_->data;
+        if (!member->is_array_) {
+          serialized_message_to_json_rapid(deser, sub_members, writer);
+        } else {
+          writer.StartArray();
+          size_t array_size = 0;
+          if (member->array_size_ && !member->is_upper_bound_) {
+            array_size = member->array_size_;
+          } else {
+            array_size = deser.deserialize_len(1);
+          }
+          for (size_t index = 0; index < array_size; ++index) {
+            serialized_message_to_json_rapid(deser, sub_members, writer);
+          }
+          writer.EndArray();
+        }
+        break;
+      }
+      default:
+        throw std::runtime_error("unknown type");
+    }
+  }
+  writer.EndObject();
+}
+
+std::string build_publish_message(const std::string & topic, const std::string & msg_type, ConstSharedMessage msg)
+{
+  auto library = rws::get_typesupport_library(msg_type, rws::ts_identifier);
+  auto ts = rclcpp::get_typesupport_handle(msg_type, rws::ts_identifier, *library);
+  auto members = static_cast<const MessageMembers *>(ts->data);
+  auto rcl_msg = &msg->get_rcl_serialized_message();
+
+  cycdeser deser(rcl_msg->buffer, rcl_msg->buffer_length);
+  
+  rapidjson::StringBuffer buffer;
+  // JSON is typically 2-4x larger than binary due to field names, quotes, etc.
+  // Add fixed overhead for envelope {"op":"publish","topic":"...","msg":}
+  buffer.Reserve(rcl_msg->buffer_length * 3 + 64);
+  RapidWriter writer(buffer);
+  
+  writer.StartObject();
+  writer.Key("op");
+  writer.String("publish");
+  writer.Key("topic");
+  writer.String(topic.c_str(), static_cast<rapidjson::SizeType>(topic.size()));
+  writer.Key("msg");
+  serialized_message_to_json_rapid(deser, members, writer);
+  writer.EndObject();
+  
+  return std::string(buffer.GetString(), buffer.GetSize());
 }
 
 template <typename T>

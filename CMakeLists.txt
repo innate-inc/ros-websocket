@@ -11,6 +11,18 @@ fetchcontent_declare(json URL https://github.com/nlohmann/json/releases/download
 fetchcontent_makeavailable(json)
 # /JSON
 
+### Fetch RapidJSON at configure time (for fast serialization)
+fetchcontent_declare(rapidjson
+  GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
+  GIT_TAG v1.1.0)
+fetchcontent_getproperties(rapidjson)
+if(NOT rapidjson_POPULATED)
+  fetchcontent_populate(rapidjson)
+endif()
+add_library(rapidjson INTERFACE)
+target_include_directories(rapidjson INTERFACE ${rapidjson_SOURCE_DIR}/include)
+# /RAPIDJSON
+
 ### Fetch ASIO at configure time
 add_definitions(
   # Complile ASIO without Boost
@@ -72,7 +84,7 @@ target_include_directories(rws_server PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include>)
 target_compile_features(rws_server PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
-target_link_libraries(rws_server asio websocketpp nlohmann_json::nlohmann_json)
+target_link_libraries(rws_server asio websocketpp nlohmann_json::nlohmann_json rapidjson)
 
 install(TARGETS rws_server
   DESTINATION lib/${PROJECT_NAME})
@@ -109,7 +121,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(rws_translate_test nlohmann_json::nlohmann_json)
+  target_link_libraries(rws_translate_test nlohmann_json::nlohmann_json rapidjson)
 
   # rws_typesupport_helpers_test
   ament_add_gtest(rws_typesupport_helpers_test
@@ -149,7 +161,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(client_handler_test nlohmann_json::nlohmann_json)
+  target_link_libraries(client_handler_test nlohmann_json::nlohmann_json rapidjson)
 endif()
 
 ament_package()

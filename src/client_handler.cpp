@@ -148,12 +148,23 @@ void ClientHandler::subscription_callback(topic_params & params, std::shared_ptr
     return;
   }
 
-  json m = {
-    {"op", "publish"},
-    {"topic", params.topic},
-  };
-  m["msg"] = rws::serialized_message_to_json(sub_type, message);
-  std::string json_str = m.dump();
+  // Toggle for benchmarking: true = RapidJSON (fast), false = nlohmann/json (old)
+  constexpr bool use_rapidjson = true;
+
+  std::string json_str;
+  if constexpr (use_rapidjson) {
+    // Fast path: use RapidJSON to build complete publish message
+    json_str = rws::build_publish_message(params.topic, sub_type, message);
+  } else {
+    // Old path: use nlohmann/json
+    json msg_json = rws::serialized_message_to_json(sub_type, message);
+    json m = {
+      {"op", "publish"},
+      {"topic", params.topic},
+      {"msg", msg_json},
+    };
+    json_str = m.dump();
+  }
   this->send_message(json_str);
 }
 
