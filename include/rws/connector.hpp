@@ -58,7 +58,7 @@ public:
     std::lock_guard<std::mutex> guard(subscribers_mutex_);
 
     auto matching_subscriber = get_subscriber_by_params(params);
-    subscriber_handle handle = {nullptr, params, handler, client_id, next_handler_id_++, rclcpp::Time(0, 0, RCL_ROS_TIME)};
+    subscriber_handle handle = {nullptr, params, handler, client_id, next_handler_id_++, rclcpp::Time(0, 0, RCL_ROS_TIME), std::make_shared<std::mutex>()};
     rclcpp::QoS qos(params.history_depth);
     auto info = node_->get_publishers_info_by_topic(params.topic);
     for(const auto& node : info)
@@ -81,6 +81,7 @@ public:
       std::lock_guard<std::mutex> guard(subscribers_mutex_);
       for (auto it = subscribers_.begin(); it != subscribers_.end(); ++it) {
         if ((*it).handle_id == handle_id) {
+          std::lock_guard<std::mutex> cb_guard(*(*it).callback_mutex);
           subscribers_.erase(it);
           break;
         }
@@ -143,6 +144,7 @@ private:
     size_t client_id;
     size_t handle_id;
     rclcpp::Time last_sent;
+    std::shared_ptr<std::mutex> callback_mutex;
   };
   struct publisher_handle
   {
@@ -181,12 +183,29 @@ private:
 
   void topic_message_callback(topic_params & params, std::shared_ptr<const rclcpp::SerializedMessage> message)
   {
-    for (auto & sub : subscribers_) {
-      if (sub.params == params &&
-          (params.throttle_rate.nanoseconds() == 0 || (sub.last_sent + params.throttle_rate) < node_->now())) {
-        sub.callback(params, message);
-        sub.last_sent = node_->now();
+    // Collect matching subscribers and lock their callback mutexes while holding the global mutex
+    struct pending_callback {
+      subscription_callback callback;
+      std::unique_lock<std::mutex> lock;
+    };
+    std::vector<pending_callback> pending;
+
+    {
+      std::lock_guard<std::mutex> guard(subscribers_mutex_);
+      std::fflush(stderr);
+      for (auto & sub : subscribers_) {
+        if (sub.params == params &&
+            (params.throttle_rate.nanoseconds() == 0 || (sub.last_sent + params.throttle_rate) < node_->now())) {
+          pending.push_back({sub.callback, std::unique_lock<std::mutex>(*sub.callback_mutex)});
+          sub.last_sent = node_->now();
+        }
       }
+    }
+
+    // Call callbacks (locks already held, will release when pending goes out of scope)
+    for (auto & p : pending) {
+      p.callback(params, message);
+      std::fflush(stderr);
     }
   }
 };
