@@ -53,6 +53,16 @@ fetchcontent_getproperties(websocketpp)
 if(NOT websocketpp_POPULATED)
   fetchcontent_populate(websocketpp)
   add_subdirectory(${websocketpp_SOURCE_DIR} ${websocketpp_BINARY_DIR} EXCLUDE_FROM_ALL)
+  
+  # Patch hybi13.hpp to skip outgoing UTF-8 validation for TEXT frames
+  # This improves performance when we know our JSON output is valid UTF-8
+  file(READ "${websocketpp_SOURCE_DIR}/websocketpp/processors/hybi13.hpp" HYBI13_CONTENT)
+  string(REPLACE 
+    "// validate payload utf8\n        if (op == frame::opcode::TEXT && !utf8_validator::validate(i)) {\n            return make_error_code(error::invalid_payload);\n        }"
+    "// UTF-8 validation disabled for outgoing TEXT frames (we generate valid UTF-8)\n        // if (op == frame::opcode::TEXT && !utf8_validator::validate(i)) {\n        //     return make_error_code(error::invalid_payload);\n        // }"
+    HYBI13_CONTENT "${HYBI13_CONTENT}")
+  file(WRITE "${websocketpp_SOURCE_DIR}/websocketpp/processors/hybi13.hpp" "${HYBI13_CONTENT}")
+  message(STATUS "Patched websocketpp hybi13.hpp to skip outgoing UTF-8 validation")
 endif()
 
 add_library(websocketpp INTERFACE)
