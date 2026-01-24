@@ -22,12 +22,31 @@
 #include "rws/connector.hpp"
 #include "rws/node_interface_impl.hpp"
 
+// Custom websocketpp config that disables UTF-8 validation for outgoing messages
+// Since we're generating valid JSON, we know the output is valid UTF-8
+struct asio_no_utf8_check : public websocketpp::config::asio {
+  // Disable UTF-8 validation (we handle encoding ourselves)
+  static const bool enable_multithreading = true;
+  
+  struct permessage_deflate_config {};
+  
+  typedef websocketpp::extensions::permessage_deflate::disabled<permessage_deflate_config>
+    permessage_deflate_type;
+  
+  // Override the UTF-8 validation setting
+  static const websocketpp::log::level alog_level = websocketpp::log::alevel::access_core;
+  static const websocketpp::log::level elog_level = websocketpp::log::elevel::none;
+  
+  // Disable outgoing UTF-8 validation
+  static const bool validate_utf8_outgoing = false;
+};
+
 using websocketpp::connection_hdl;
 using websocketpp::lib::bind;
 using websocketpp::lib::condition_variable;
 using websocketpp::lib::placeholders::_1;
 using websocketpp::lib::placeholders::_2;
-typedef websocketpp::server<websocketpp::config::asio> server;
+typedef websocketpp::server<asio_no_utf8_check> server;
 
 enum action_type {
   SUBSCRIBE,
