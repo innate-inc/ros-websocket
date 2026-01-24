@@ -139,7 +139,7 @@ GenericActionClient::GenericActionClient(
 GenericActionClient::~GenericActionClient() {}
 
 GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
-  const json & goal_json,
+  const rapidjson::Value & goal_json,
   GoalResponseCallback goal_response_callback,
   FeedbackCallback feedback_callback,
   ResultCallback result_callback)

@@ -5,13 +5,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-### Fetch JSON at configure time
+### Fetch RapidJSON at configure time (for JSON serialization)
 include(FetchContent)
-fetchcontent_declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz)
-fetchcontent_makeavailable(json)
-# /JSON
-
-### Fetch RapidJSON at configure time (for fast serialization)
 fetchcontent_declare(rapidjson
   GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
   GIT_TAG v1.1.0)
@@ -86,7 +81,7 @@ target_include_directories(rws_server PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include>)
 target_compile_features(rws_server PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
-target_link_libraries(rws_server asio websocketpp nlohmann_json::nlohmann_json rapidjson)
+target_link_libraries(rws_server asio websocketpp rapidjson)
 
 install(TARGETS rws_server
   DESTINATION lib/${PROJECT_NAME})
@@ -123,7 +118,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(rws_translate_test nlohmann_json::nlohmann_json rapidjson)
+  target_link_libraries(rws_translate_test rapidjson)
 
   # rws_typesupport_helpers_test
   ament_add_gtest(rws_typesupport_helpers_test
@@ -147,6 +142,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
     $<INSTALL_INTERFACE:include>)
+  target_link_libraries(rws_connector_test rapidjson)
 
   # client_handler_test
   ament_add_gmock(client_handler_test
@@ -163,7 +159,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(client_handler_test nlohmann_json::nlohmann_json rapidjson)
+  target_link_libraries(client_handler_test rapidjson)
 endif()
 
 ament_package()

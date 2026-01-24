@@ -14,6 +14,7 @@
 
 #include "rws/translate.hpp"
 
+#include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
 
@@ -33,138 +34,9 @@ using rosidl_typesupport_introspection_cpp::MessageMember;
 using rosidl_typesupport_introspection_cpp::MessageMembers;
 using rosidl_typesupport_introspection_cpp::ServiceMembers;
 
-template <typename T>
-static void deserialize_field(cycdeser & deser, const MessageMember * member, json & field)
-{
-  T val;
-  if (!member->is_array_) {
-    deser >> val;
-    field = val;
-  } else if (member->array_size_ && !member->is_upper_bound_) {
-    field = json::array();
-    for (size_t i = 0; i < member->array_size_; i++) {
-      deser >> val;
-      field[i] = val;
-    }
-  } else {
-    field = json::array();
-    uint32_t seq_size;
-    deser >> seq_size;
-
-    for (size_t i = 0; i < seq_size; i++) {
-      deser >> val;
-      field[i] = val;
-    }
-  }
-}
-
-static void serialized_message_to_json(cycdeser & deser, const MessageMembers * members, json & j)
-{
-  for (uint32_t i = 0; i < members->member_count_; ++i) {
-    const auto * member = members->members_ + i;
-
-    switch (member->type_id_) {
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
-        deserialize_field<bool>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
-        deserialize_field<uint8_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
-        deserialize_field<char>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
-        deserialize_field<float>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
-        deserialize_field<double>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
-        deserialize_field<int8_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
-        deserialize_field<int16_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
-        deserialize_field<uint16_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
-        deserialize_field<int32_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
-        deserialize_field<uint32_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
-        deserialize_field<int64_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
-        deserialize_field<uint64_t>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
-        deserialize_field<std::string>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_WSTRING:
-        deserialize_field<std::wstring>(deser, member, j[member->name_]);
-        break;
-
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
-        auto sub_members = (const MessageMembers *)member->members_->data;
-        if (!member->is_array_) {
-          serialized_message_to_json(deser, sub_members, j[member->name_]);
-        } else {
-          size_t array_size = 0;
-
-          if (member->array_size_ && !member->is_upper_bound_) {
-            array_size = member->array_size_;
-          } else {
-            array_size = deser.deserialize_len(1);
-          }
-
-          if (array_size != 0 && !member->get_function) {
-            throw std::runtime_error("unexpected error: get_function function is null");
-          }
-          for (size_t index = 0; index < array_size; ++index) {
-            serialized_message_to_json(deser, sub_members, j[member->name_][index]);
-          }
-        }
-        break;
-      }
-      default:
-        throw std::runtime_error("unknown type");
-    }
-  }
-}
-
-json serialized_message_to_json(const std::string & msg_type, ConstSharedMessage msg)
-{
-  auto library = rws::get_typesupport_library(msg_type, rws::ts_identifier);
-  auto ts = rclcpp::get_typesupport_handle(msg_type, rws::ts_identifier, *library);
-  auto members = static_cast<const MessageMembers *>(ts->data);
-  auto rcl_msg = &msg->get_rcl_serialized_message();
-
-  cycdeser deser(rcl_msg->buffer, rcl_msg->buffer_length);
-  json j;
-  serialized_message_to_json(deser, members, j);
-
-  return j;
-}
-
-// RapidJSON-based fast serialization
-using RapidWriter = rapidjson::Writer<rapidjson::StringBuffer>;
+// ============================================================================
+// RapidJSON Deserialization (ROS message -> JSON)
+// ============================================================================
 
 template <typename T>
 static void deserialize_field_rapid(cycdeser & deser, const MessageMember * member, RapidWriter & writer)
@@ -307,6 +179,23 @@ static void serialized_message_to_json_rapid(cycdeser & deser, const MessageMemb
   writer.EndObject();
 }
 
+void serialized_message_to_json(const std::string & msg_type, ConstSharedMessage msg, rapidjson::Document & doc)
+{
+  auto library = rws::get_typesupport_library(msg_type, rws::ts_identifier);
+  auto ts = rclcpp::get_typesupport_handle(msg_type, rws::ts_identifier, *library);
+  auto members = static_cast<const MessageMembers *>(ts->data);
+  auto rcl_msg = &msg->get_rcl_serialized_message();
+
+  cycdeser deser(rcl_msg->buffer, rcl_msg->buffer_length);
+  
+  // Write to string buffer first, then parse into document
+  rapidjson::StringBuffer buffer;
+  RapidWriter writer(buffer);
+  serialized_message_to_json_rapid(deser, members, writer);
+  
+  doc.Parse(buffer.GetString());
+}
+
 std::string build_publish_message(const std::string & topic, const std::string & msg_type, ConstSharedMessage msg)
 {
   auto library = rws::get_typesupport_library(msg_type, rws::ts_identifier);
@@ -334,27 +223,145 @@ std::string build_publish_message(const std::string & topic, const std::string &
   return std::string(buffer.GetString(), buffer.GetSize());
 }
 
+// ============================================================================
+// RapidJSON Serialization (JSON -> ROS message)
+// ============================================================================
+
 template <typename T>
-static void serialize_field(
-  const MessageMember * member, json & field, cycser & ser, T default_value)
+static void serialize_field_rapid(
+  const MessageMember * member, const rapidjson::Value & field, cycser & ser, T default_value)
 {
   if (!member->is_array_) {
-    ser << (field.is_null() ? default_value : field.get<T>());
+    if (field.IsNull()) {
+      ser << default_value;
+    } else {
+      if constexpr (std::is_same_v<T, bool>) {
+        ser << field.GetBool();
+      } else if constexpr (std::is_same_v<T, int8_t>) {
+        ser << static_cast<int8_t>(field.GetInt());
+      } else if constexpr (std::is_same_v<T, int16_t>) {
+        ser << static_cast<int16_t>(field.GetInt());
+      } else if constexpr (std::is_same_v<T, int32_t>) {
+        ser << field.GetInt();
+      } else if constexpr (std::is_same_v<T, int64_t>) {
+        ser << field.GetInt64();
+      } else if constexpr (std::is_same_v<T, uint8_t>) {
+        ser << static_cast<uint8_t>(field.GetUint());
+      } else if constexpr (std::is_same_v<T, uint16_t>) {
+        ser << static_cast<uint16_t>(field.GetUint());
+      } else if constexpr (std::is_same_v<T, uint32_t>) {
+        ser << field.GetUint();
+      } else if constexpr (std::is_same_v<T, uint64_t>) {
+        ser << field.GetUint64();
+      } else if constexpr (std::is_same_v<T, float>) {
+        ser << static_cast<float>(field.GetDouble());
+      } else if constexpr (std::is_same_v<T, double>) {
+        ser << field.GetDouble();
+      } else if constexpr (std::is_same_v<T, char>) {
+        ser << static_cast<char>(field.GetInt());
+      } else if constexpr (std::is_same_v<T, std::string>) {
+        ser << std::string(field.GetString(), field.GetStringLength());
+      } else if constexpr (std::is_same_v<T, std::wstring>) {
+        std::string narrow(field.GetString(), field.GetStringLength());
+        ser << std::wstring(narrow.begin(), narrow.end());
+      }
+    }
   } else if (member->array_size_ && !member->is_upper_bound_) {
+    // Fixed-size array
     for (size_t i = 0; i < member->array_size_; i++) {
-      ser << (field.is_null() || field[i].is_null() ? default_value : field[i].get<T>());
+      if (field.IsNull() || !field.IsArray() || i >= field.Size() || field[i].IsNull()) {
+        ser << default_value;
+      } else {
+        const auto& elem = field[static_cast<rapidjson::SizeType>(i)];
+        if constexpr (std::is_same_v<T, bool>) {
+          ser << elem.GetBool();
+        } else if constexpr (std::is_same_v<T, int8_t>) {
+          ser << static_cast<int8_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int16_t>) {
+          ser << static_cast<int16_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int32_t>) {
+          ser << elem.GetInt();
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+          ser << elem.GetInt64();
+        } else if constexpr (std::is_same_v<T, uint8_t>) {
+          ser << static_cast<uint8_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint16_t>) {
+          ser << static_cast<uint16_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint32_t>) {
+          ser << elem.GetUint();
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+          ser << elem.GetUint64();
+        } else if constexpr (std::is_same_v<T, float>) {
+          ser << static_cast<float>(elem.GetDouble());
+        } else if constexpr (std::is_same_v<T, double>) {
+          ser << elem.GetDouble();
+        } else if constexpr (std::is_same_v<T, char>) {
+          ser << static_cast<char>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, std::string>) {
+          ser << std::string(elem.GetString(), elem.GetStringLength());
+        } else if constexpr (std::is_same_v<T, std::wstring>) {
+          std::string narrow(elem.GetString(), elem.GetStringLength());
+          ser << std::wstring(narrow.begin(), narrow.end());
+        }
+      }
     }
   } else {
-    uint32_t seq_size = field.size();
+    // Dynamic array
+    uint32_t seq_size = field.IsArray() ? field.Size() : 0;
     ser << seq_size;
 
-    for (size_t i = 0; i < seq_size; i++) {
-      ser << (field.is_null() || field[i].is_null() ? default_value : field[i].get<T>());
+    for (uint32_t i = 0; i < seq_size; i++) {
+      const auto& elem = field[i];
+      if (elem.IsNull()) {
+        ser << default_value;
+      } else {
+        if constexpr (std::is_same_v<T, bool>) {
+          ser << elem.GetBool();
+        } else if constexpr (std::is_same_v<T, int8_t>) {
+          ser << static_cast<int8_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int16_t>) {
+          ser << static_cast<int16_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int32_t>) {
+          ser << elem.GetInt();
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+          ser << elem.GetInt64();
+        } else if constexpr (std::is_same_v<T, uint8_t>) {
+          ser << static_cast<uint8_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint16_t>) {
+          ser << static_cast<uint16_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint32_t>) {
+          ser << elem.GetUint();
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+          ser << elem.GetUint64();
+        } else if constexpr (std::is_same_v<T, float>) {
+          ser << static_cast<float>(elem.GetDouble());
+        } else if constexpr (std::is_same_v<T, double>) {
+          ser << elem.GetDouble();
+        } else if constexpr (std::is_same_v<T, char>) {
+          ser << static_cast<char>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, std::string>) {
+          ser << std::string(elem.GetString(), elem.GetStringLength());
+        } else if constexpr (std::is_same_v<T, std::wstring>) {
+          std::string narrow(elem.GetString(), elem.GetStringLength());
+          ser << std::wstring(narrow.begin(), narrow.end());
+        }
+      }
     }
   }
 }
 
-static void json_to_serialized_message(cycser & ser, const MessageMembers * members, const json & j)
+// Null value for cases where field is not found
+static rapidjson::Value g_null_value;
+
+static const rapidjson::Value& get_member_value(const rapidjson::Value& j, const char* name)
+{
+  if (j.IsObject() && j.HasMember(name)) {
+    return j[name];
+  }
+  return g_null_value;
+}
+
+static void json_to_serialized_message_rapid(cycser & ser, const MessageMembers * members, const rapidjson::Value & j)
 {
   for (uint32_t i = 0; i < members->member_count_; ++i) {
     const auto member = members->members_ + i;
@@ -363,81 +370,80 @@ static void json_to_serialized_message(cycser & ser, const MessageMembers * memb
       continue;
     }
 
-    auto found_field = j.find(member->name_);
-
-    json field;
-    if (found_field == j.end()) {
+    const rapidjson::Value& field = get_member_value(j, member->name_);
+    
+    if (field.IsNull() && !j.IsNull()) {
       RCLCPP_INFO(
         get_logger(), "Field '%s' is not in json, default: %p", member->name_,
         member->default_value_);
-    } else {
-      field = *found_field;
     }
 
     switch (member->type_id_) {
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
-        serialize_field<bool>(member, field, ser, false);
+        serialize_field_rapid<bool>(member, field, ser, false);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
-        serialize_field<uint8_t>(member, field, ser, 0);
+        serialize_field_rapid<uint8_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
-        serialize_field<char>(member, field, ser, 0);
+        serialize_field_rapid<char>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
-        serialize_field<float>(member, field, ser, 0.0);
+        serialize_field_rapid<float>(member, field, ser, 0.0f);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
-        serialize_field<double>(member, field, ser, 0.0);
+        serialize_field_rapid<double>(member, field, ser, 0.0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
-        serialize_field<int8_t>(member, field, ser, 0);
+        serialize_field_rapid<int8_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
-        serialize_field<int16_t>(member, field, ser, 0);
+        serialize_field_rapid<int16_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
-        serialize_field<uint16_t>(member, field, ser, 0);
+        serialize_field_rapid<uint16_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
-        serialize_field<int32_t>(member, field, ser, 0);
+        serialize_field_rapid<int32_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
-        serialize_field<uint32_t>(member, field, ser, 0);
+        serialize_field_rapid<uint32_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
-        serialize_field<int64_t>(member, field, ser, 0);
+        serialize_field_rapid<int64_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
-        serialize_field<uint64_t>(member, field, ser, 0);
+        serialize_field_rapid<uint64_t>(member, field, ser, 0);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
-        serialize_field<std::string>(member, field, ser, std::string(""));
+        serialize_field_rapid<std::string>(member, field, ser, std::string(""));
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_WSTRING:
-        serialize_field<std::wstring>(member, field, ser, std::wstring(L""));
+        serialize_field_rapid<std::wstring>(member, field, ser, std::wstring(L""));
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
         auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
         if (!member->is_array_) {
-          json_to_serialized_message(ser, sub_members, field);
+          json_to_serialized_message_rapid(ser, sub_members, field);
         } else {
           size_t array_size = 0;
 
           if (member->array_size_ && !member->is_upper_bound_) {
             array_size = member->array_size_;
           } else {
-            if (field.is_array()) {
-              array_size = field.size();
+            if (field.IsArray()) {
+              array_size = field.Size();
             }
-
             // Serialize length
             ser << (uint32_t)array_size;
           }
 
           for (size_t index = 0; index < array_size; ++index) {
-            json_to_serialized_message(ser, sub_members, field[index]);
+            const rapidjson::Value& elem = field.IsArray() && index < field.Size() 
+              ? field[static_cast<rapidjson::SizeType>(index)] 
+              : g_null_value;
+            json_to_serialized_message_rapid(ser, sub_members, elem);
           }
         }
         break;
@@ -448,7 +454,7 @@ static void json_to_serialized_message(cycser & ser, const MessageMembers * memb
   }
 }
 
-SharedMessage json_to_serialized_message(const std::string & msg_type, const json & j)
+SharedMessage json_to_serialized_message(const std::string & msg_type, const rapidjson::Value & value)
 {
   auto library = rws::get_typesupport_library(msg_type, rws::ts_identifier);
   auto ts = rclcpp::get_typesupport_handle(msg_type, rws::ts_identifier, *library);
@@ -459,7 +465,7 @@ SharedMessage json_to_serialized_message(const std::string & msg_type, const jso
   std::vector<unsigned char> buffer;
   cycser ser(buffer);
 
-  json_to_serialized_message(ser, members, j);
+  json_to_serialized_message_rapid(ser, members, value);
 
   msg->reserve(buffer.size());
   memcpy(rcl_msg->buffer, buffer.data(), buffer.size());
@@ -468,7 +474,7 @@ SharedMessage json_to_serialized_message(const std::string & msg_type, const jso
   return msg;
 }
 
-SharedMessage json_to_serialized_service_request(const std::string & srv_type, const json & j)
+SharedMessage json_to_serialized_service_request(const std::string & srv_type, const rapidjson::Value & value)
 {
   auto library = rws::get_typesupport_library(srv_type, rws::ts_identifier);
   auto ts = rws::get_service_typesupport_handle(srv_type, rws::ts_identifier, *library);
@@ -480,7 +486,7 @@ SharedMessage json_to_serialized_service_request(const std::string & srv_type, c
   std::vector<unsigned char> buffer;
   cycser ser(buffer);
 
-  json_to_serialized_message(ser, request_members, j);
+  json_to_serialized_message_rapid(ser, request_members, value);
 
   msg->reserve(buffer.size());
   memcpy(rcl_msg->buffer, buffer.data(), buffer.size());
@@ -489,7 +495,7 @@ SharedMessage json_to_serialized_service_request(const std::string & srv_type, c
   return msg;
 }
 
-json serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg)
+void serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg, RapidWriter & writer)
 {
   auto library = rws::get_typesupport_library(srv_type, rws::ts_identifier);
   auto ts = rws::get_service_typesupport_handle(srv_type, rws::ts_identifier, *library);
@@ -499,11 +505,277 @@ json serialized_service_response_to_json(const std::string & srv_type, ConstShar
   auto rcl_msg = &msg->get_rcl_serialized_message();
 
   cycdeser deser(rcl_msg->buffer, rcl_msg->buffer_length);
-  json j;
-  serialized_message_to_json(deser, response_members, j);
-
-  return j;
+  serialized_message_to_json_rapid(deser, response_members, writer);
 }
+
+// ============================================================================
+// Direct ROS message population from JSON (for actions)
+// ============================================================================
+
+// Helper function to set a primitive field value
+template <typename T>
+static void set_field_value_rapid(void * field_ptr, const rapidjson::Value & value, T default_val)
+{
+  if (value.IsNull()) {
+    *static_cast<T *>(field_ptr) = default_val;
+  } else {
+    if constexpr (std::is_same_v<T, bool>) {
+      *static_cast<T *>(field_ptr) = value.GetBool();
+    } else if constexpr (std::is_same_v<T, int8_t>) {
+      *static_cast<T *>(field_ptr) = static_cast<int8_t>(value.GetInt());
+    } else if constexpr (std::is_same_v<T, int16_t>) {
+      *static_cast<T *>(field_ptr) = static_cast<int16_t>(value.GetInt());
+    } else if constexpr (std::is_same_v<T, int32_t>) {
+      *static_cast<T *>(field_ptr) = value.GetInt();
+    } else if constexpr (std::is_same_v<T, int64_t>) {
+      *static_cast<T *>(field_ptr) = value.GetInt64();
+    } else if constexpr (std::is_same_v<T, uint8_t>) {
+      *static_cast<T *>(field_ptr) = static_cast<uint8_t>(value.GetUint());
+    } else if constexpr (std::is_same_v<T, uint16_t>) {
+      *static_cast<T *>(field_ptr) = static_cast<uint16_t>(value.GetUint());
+    } else if constexpr (std::is_same_v<T, uint32_t>) {
+      *static_cast<T *>(field_ptr) = value.GetUint();
+    } else if constexpr (std::is_same_v<T, uint64_t>) {
+      *static_cast<T *>(field_ptr) = value.GetUint64();
+    } else if constexpr (std::is_same_v<T, float>) {
+      *static_cast<T *>(field_ptr) = static_cast<float>(value.GetDouble());
+    } else if constexpr (std::is_same_v<T, double>) {
+      *static_cast<T *>(field_ptr) = value.GetDouble();
+    } else if constexpr (std::is_same_v<T, char>) {
+      *static_cast<T *>(field_ptr) = static_cast<char>(value.GetInt());
+    }
+  }
+}
+
+// Helper function to set an array field
+template <typename T>
+static void set_array_field_rapid(
+  const MessageMember * member, void * field_ptr, const rapidjson::Value & value, T default_val)
+{
+  if (!member->is_array_) {
+    set_field_value_rapid<T>(field_ptr, value, default_val);
+  } else if (member->array_size_ && !member->is_upper_bound_) {
+    // Fixed-size array
+    T * data = static_cast<T *>(field_ptr);
+    for (size_t i = 0; i < member->array_size_; i++) {
+      if (value.IsArray() && i < value.Size() && !value[static_cast<rapidjson::SizeType>(i)].IsNull()) {
+        const auto& elem = value[static_cast<rapidjson::SizeType>(i)];
+        if constexpr (std::is_same_v<T, bool>) {
+          data[i] = elem.GetBool();
+        } else if constexpr (std::is_same_v<T, int8_t>) {
+          data[i] = static_cast<int8_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int16_t>) {
+          data[i] = static_cast<int16_t>(elem.GetInt());
+        } else if constexpr (std::is_same_v<T, int32_t>) {
+          data[i] = elem.GetInt();
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+          data[i] = elem.GetInt64();
+        } else if constexpr (std::is_same_v<T, uint8_t>) {
+          data[i] = static_cast<uint8_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint16_t>) {
+          data[i] = static_cast<uint16_t>(elem.GetUint());
+        } else if constexpr (std::is_same_v<T, uint32_t>) {
+          data[i] = elem.GetUint();
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+          data[i] = elem.GetUint64();
+        } else if constexpr (std::is_same_v<T, float>) {
+          data[i] = static_cast<float>(elem.GetDouble());
+        } else if constexpr (std::is_same_v<T, double>) {
+          data[i] = elem.GetDouble();
+        } else if constexpr (std::is_same_v<T, char>) {
+          data[i] = static_cast<char>(elem.GetInt());
+        }
+      } else {
+        data[i] = default_val;
+      }
+    }
+  } else {
+    // Dynamic array (vector)
+    auto * vec = static_cast<std::vector<T> *>(field_ptr);
+    vec->clear();
+    if (value.IsArray()) {
+      vec->reserve(value.Size());
+      for (rapidjson::SizeType i = 0; i < value.Size(); i++) {
+        const auto& elem = value[i];
+        if (elem.IsNull()) {
+          vec->push_back(default_val);
+        } else {
+          if constexpr (std::is_same_v<T, bool>) {
+            vec->push_back(elem.GetBool());
+          } else if constexpr (std::is_same_v<T, int8_t>) {
+            vec->push_back(static_cast<int8_t>(elem.GetInt()));
+          } else if constexpr (std::is_same_v<T, int16_t>) {
+            vec->push_back(static_cast<int16_t>(elem.GetInt()));
+          } else if constexpr (std::is_same_v<T, int32_t>) {
+            vec->push_back(elem.GetInt());
+          } else if constexpr (std::is_same_v<T, int64_t>) {
+            vec->push_back(elem.GetInt64());
+          } else if constexpr (std::is_same_v<T, uint8_t>) {
+            vec->push_back(static_cast<uint8_t>(elem.GetUint()));
+          } else if constexpr (std::is_same_v<T, uint16_t>) {
+            vec->push_back(static_cast<uint16_t>(elem.GetUint()));
+          } else if constexpr (std::is_same_v<T, uint32_t>) {
+            vec->push_back(elem.GetUint());
+          } else if constexpr (std::is_same_v<T, uint64_t>) {
+            vec->push_back(elem.GetUint64());
+          } else if constexpr (std::is_same_v<T, float>) {
+            vec->push_back(static_cast<float>(elem.GetDouble()));
+          } else if constexpr (std::is_same_v<T, double>) {
+            vec->push_back(elem.GetDouble());
+          } else if constexpr (std::is_same_v<T, char>) {
+            vec->push_back(static_cast<char>(elem.GetInt()));
+          }
+        }
+      }
+    }
+  }
+}
+
+// Forward declaration
+static void populate_message_from_json_rapid(
+  const rapidjson::Value & j, const MessageMembers * members, void * message);
+
+// Helper for string fields
+static void set_string_field_rapid(const MessageMember * member, void * field_ptr, const rapidjson::Value & value)
+{
+  if (!member->is_array_) {
+    auto * str = static_cast<std::string *>(field_ptr);
+    *str = value.IsNull() ? "" : std::string(value.GetString(), value.GetStringLength());
+  } else if (member->array_size_ && !member->is_upper_bound_) {
+    // Fixed-size array of strings
+    auto * data = static_cast<std::string *>(field_ptr);
+    for (size_t i = 0; i < member->array_size_; i++) {
+      if (value.IsArray() && i < value.Size() && !value[static_cast<rapidjson::SizeType>(i)].IsNull()) {
+        const auto& elem = value[static_cast<rapidjson::SizeType>(i)];
+        data[i] = std::string(elem.GetString(), elem.GetStringLength());
+      } else {
+        data[i] = "";
+      }
+    }
+  } else {
+    // Dynamic array of strings
+    auto * vec = static_cast<std::vector<std::string> *>(field_ptr);
+    vec->clear();
+    if (value.IsArray()) {
+      vec->reserve(value.Size());
+      for (rapidjson::SizeType i = 0; i < value.Size(); i++) {
+        const auto& elem = value[i];
+        vec->push_back(elem.IsNull() ? "" : std::string(elem.GetString(), elem.GetStringLength()));
+      }
+    }
+  }
+}
+
+static void populate_message_from_json_rapid(
+  const rapidjson::Value & j, const MessageMembers * members, void * message)
+{
+  for (uint32_t i = 0; i < members->member_count_; ++i) {
+    const auto * member = members->members_ + i;
+
+    if (strcmp(member->name_, "structure_needs_at_least_one_member") == 0) {
+      continue;
+    }
+
+    void * field_ptr = static_cast<uint8_t *>(message) + member->offset_;
+
+    const rapidjson::Value& field = get_member_value(j, member->name_);
+    
+    if (field.IsNull()) {
+      RCLCPP_INFO(
+        get_logger(), "Field '%s' is not in json, using default", member->name_);
+      // Field not in JSON, leave as default (already initialized)
+      // For nested messages, we still need to recurse with empty JSON
+      if (member->type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
+        if (!member->is_array_) {
+          populate_message_from_json_rapid(g_null_value, sub_members, field_ptr);
+        }
+      }
+      continue;
+    }
+
+    switch (member->type_id_) {
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
+        set_array_field_rapid<bool>(member, field_ptr, field, false);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
+        set_array_field_rapid<uint8_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
+        set_array_field_rapid<char>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
+        set_array_field_rapid<float>(member, field_ptr, field, 0.0f);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
+        set_array_field_rapid<double>(member, field_ptr, field, 0.0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
+        set_array_field_rapid<int8_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
+        set_array_field_rapid<int16_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
+        set_array_field_rapid<uint16_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
+        set_array_field_rapid<int32_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
+        set_array_field_rapid<uint32_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
+        set_array_field_rapid<int64_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
+        set_array_field_rapid<uint64_t>(member, field_ptr, field, 0);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
+        set_string_field_rapid(member, field_ptr, field);
+        break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
+        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
+        if (!member->is_array_) {
+          populate_message_from_json_rapid(field.IsNull() ? g_null_value : field, sub_members, field_ptr);
+        } else if (member->array_size_ && !member->is_upper_bound_) {
+          // Fixed-size array of messages
+          for (size_t idx = 0; idx < member->array_size_; idx++) {
+            void * elem_ptr = member->get_function(field_ptr, idx);
+            const rapidjson::Value& elem_json = (field.IsArray() && idx < field.Size()) 
+              ? field[static_cast<rapidjson::SizeType>(idx)] 
+              : g_null_value;
+            populate_message_from_json_rapid(elem_json, sub_members, elem_ptr);
+          }
+        } else {
+          // Dynamic array of messages - use resize_function
+          size_t arr_size = field.IsArray() ? field.Size() : 0;
+          if (member->resize_function) {
+            member->resize_function(field_ptr, arr_size);
+          }
+          for (size_t idx = 0; idx < arr_size; idx++) {
+            void * elem_ptr = member->get_function(field_ptr, idx);
+            populate_message_from_json_rapid(field[static_cast<rapidjson::SizeType>(idx)], sub_members, elem_ptr);
+          }
+        }
+        break;
+      }
+      default:
+        RCLCPP_WARN(get_logger(), "Unknown field type: %d", member->type_id_);
+        break;
+    }
+  }
+}
+
+void json_to_ros_message(const rapidjson::Value & value, const MessageMembers * members, void * message)
+{
+  populate_message_from_json_rapid(value, members, message);
+}
+
+// ============================================================================
+// Message metadata generation
+// ============================================================================
 
 static std::string members_to_meta(
   const MessageMembers * members, std::map<std::string, std::string> & deps,
@@ -530,12 +802,8 @@ static std::string members_to_meta(
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
         s << "bool" << b << " " << name << "\n";
         break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:  // byte is legacy type
-        // s << "byte" << b << " " << name << "\n";
-        // break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:  // char is legacy type
-        // s << "char" << b << " " << name << "\n";
-        // break;
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
+      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
         s << "uint8" << b << " " << name << "\n";
         break;
@@ -607,187 +875,6 @@ std::string generate_message_meta(const std::string & msg_type, bool rosbridge_c
   }
 
   return s.str();
-}
-
-// Helper function to set a primitive field value
-template <typename T>
-static void set_field_value(void * field_ptr, const json & value, T default_val)
-{
-  if (value.is_null()) {
-    *static_cast<T *>(field_ptr) = default_val;
-  } else {
-    *static_cast<T *>(field_ptr) = value.get<T>();
-  }
-}
-
-// Helper function to set an array field
-template <typename T>
-static void set_array_field(
-  const MessageMember * member, void * field_ptr, const json & value, T default_val)
-{
-  if (!member->is_array_) {
-    set_field_value<T>(field_ptr, value, default_val);
-  } else if (member->array_size_ && !member->is_upper_bound_) {
-    // Fixed-size array
-    T * data = static_cast<T *>(field_ptr);
-    for (size_t i = 0; i < member->array_size_; i++) {
-      if (value.is_array() && i < value.size() && !value[i].is_null()) {
-        data[i] = value[i].get<T>();
-      } else {
-        data[i] = default_val;
-      }
-    }
-  } else {
-    // Dynamic array (vector)
-    auto * vec = static_cast<std::vector<T> *>(field_ptr);
-    vec->clear();
-    if (value.is_array()) {
-      vec->reserve(value.size());
-      for (const auto & elem : value) {
-        vec->push_back(elem.is_null() ? default_val : elem.get<T>());
-      }
-    }
-  }
-}
-
-// Recursive function to populate message from JSON
-static void populate_message_from_json(
-  const json & j, const MessageMembers * members, void * message);
-
-// Helper for string fields
-static void set_string_field(const MessageMember * member, void * field_ptr, const json & value)
-{
-  if (!member->is_array_) {
-    auto * str = static_cast<std::string *>(field_ptr);
-    *str = value.is_null() ? "" : value.get<std::string>();
-  } else if (member->array_size_ && !member->is_upper_bound_) {
-    // Fixed-size array of strings
-    auto * data = static_cast<std::string *>(field_ptr);
-    for (size_t i = 0; i < member->array_size_; i++) {
-      if (value.is_array() && i < value.size() && !value[i].is_null()) {
-        data[i] = value[i].get<std::string>();
-      } else {
-        data[i] = "";
-      }
-    }
-  } else {
-    // Dynamic array of strings
-    auto * vec = static_cast<std::vector<std::string> *>(field_ptr);
-    vec->clear();
-    if (value.is_array()) {
-      vec->reserve(value.size());
-      for (const auto & elem : value) {
-        vec->push_back(elem.is_null() ? "" : elem.get<std::string>());
-      }
-    }
-  }
-}
-
-static void populate_message_from_json(
-  const json & j, const MessageMembers * members, void * message)
-{
-  for (uint32_t i = 0; i < members->member_count_; ++i) {
-    const auto * member = members->members_ + i;
-
-    if (strcmp(member->name_, "structure_needs_at_least_one_member") == 0) {
-      continue;
-    }
-
-    void * field_ptr = static_cast<uint8_t *>(message) + member->offset_;
-
-    auto found_field = j.find(member->name_);
-    json field;
-    if (found_field == j.end()) {
-      RCLCPP_INFO(
-        get_logger(), "Field '%s' is not in json, using default", member->name_);
-      // Field not in JSON, leave as default (already initialized)
-      // For nested messages, we still need to recurse with empty JSON
-      if (member->type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
-        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
-        if (!member->is_array_) {
-          populate_message_from_json(json::object(), sub_members, field_ptr);
-        }
-      }
-      continue;
-    } else {
-      field = *found_field;
-    }
-
-    switch (member->type_id_) {
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOL:
-        set_array_field<bool>(member, field_ptr, field, false);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
-        set_array_field<uint8_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
-        set_array_field<char>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
-        set_array_field<float>(member, field_ptr, field, 0.0f);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64:
-        set_array_field<double>(member, field_ptr, field, 0.0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
-        set_array_field<int8_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
-        set_array_field<int16_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
-        set_array_field<uint16_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
-        set_array_field<int32_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
-        set_array_field<uint32_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
-        set_array_field<int64_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
-        set_array_field<uint64_t>(member, field_ptr, field, 0);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING:
-        set_string_field(member, field_ptr, field);
-        break;
-      case rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE: {
-        auto sub_members = static_cast<const MessageMembers *>(member->members_->data);
-        if (!member->is_array_) {
-          populate_message_from_json(field.is_null() ? json::object() : field, sub_members, field_ptr);
-        } else if (member->array_size_ && !member->is_upper_bound_) {
-          // Fixed-size array of messages
-          for (size_t idx = 0; idx < member->array_size_; idx++) {
-            void * elem_ptr = member->get_function(field_ptr, idx);
-            json elem_json = (field.is_array() && idx < field.size()) ? field[idx] : json::object();
-            populate_message_from_json(elem_json, sub_members, elem_ptr);
-          }
-        } else {
-          // Dynamic array of messages - use resize_function
-          size_t arr_size = field.is_array() ? field.size() : 0;
-          if (member->resize_function) {
-            member->resize_function(field_ptr, arr_size);
-          }
-          for (size_t idx = 0; idx < arr_size; idx++) {
-            void * elem_ptr = member->get_function(field_ptr, idx);
-            populate_message_from_json(field[idx], sub_members, elem_ptr);
-          }
-        }
-        break;
-      }
-      default:
-        RCLCPP_WARN(get_logger(), "Unknown field type: %d", member->type_id_);
-        break;
-    }
-  }
-}
-
-void json_to_ros_message(const json & j, const MessageMembers * members, void * message)
-{
-  populate_message_from_json(j, members, message);
 }
 
 }  // namespace rws

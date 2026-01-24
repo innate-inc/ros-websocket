@@ -72,7 +72,7 @@ rws_server_node = Node(
 Unlike Rosbridge, RWS does not expose `/rosapi` node, all `rosapi` related API requests are handled internally in `rws_server` node.
 
 # Dependencies
-RWS is using [websocketpp](https://github.com/zaphoyd/websocketpp), [asio](https://github.com/chriskohlhoff/asio) and [nlohmann/json](https://github.com/nlohmann/json). These 3 libraries will be fetched by CMake during configuration step.
+RWS is using [websocketpp](https://github.com/zaphoyd/websocketpp), [asio](https://github.com/chriskohlhoff/asio) and [RapidJSON](https://github.com/Tencent/rapidjson). These 3 libraries will be fetched by CMake during configuration step.
 
 # Motivation behind RWS
 In my experiece, Rosbridge does not work well with the second version of ROS. Seems like Rosbridge developers mainly focused on ROS1 support, and ROS2 is handled on a best effort basis(for example, check [this issue](https://github.com/RobotWebTools/rosbridge_suite/issues/744)). I'm experiencing severe memory leaks(~1 GB of memory per day), high CPU usage, on a device like Raspberry Pi it's a problem. It's also not very stable and sometimes crashes if multiple clients reconnect rapidly.

@@ -9,8 +9,6 @@
 namespace rws
 {
 
-using json = nlohmann::json;
-
 class ClientHandlerFixture : public testing::Test
 {
 public:
@@ -29,13 +27,14 @@ TEST_F(ClientHandlerFixture, subsribe_to_topic_is_thread_safe)
   auto node_interface = std::make_shared<rws::NodeInterfaceImpl>(server_node);
   auto connector = std::make_shared<rws::Connector<>>(node_interface);
   auto pub = server_node->create_generic_publisher("/test", "std_msgs/msg/String", rclcpp::QoS(10));
-  auto json_o = json::parse(R"(
+  const char* json_str = R"(
     {
       "compression": "none",
       "op": "subscribe",
       "topic": "/test"
     }
-  )");
+  )";
+  const size_t json_len = strlen(json_str);
   const int nodes_count = 50;
 
   std::vector<std::thread> threads;
@@ -44,9 +43,9 @@ TEST_F(ClientHandlerFixture, subsribe_to_topic_is_thread_safe)
     nodes.push_back(std::make_shared<rws::ClientHandler>(
       ti, node_interface, connector, true, [](std::string &) {},
       [](std::vector<std::uint8_t> &) {}));
-    threads.push_back(std::thread([ti, nodes, &json_o]() {
+    threads.push_back(std::thread([ti, nodes, json_str, json_len]() {
       for (int i = 0; i < 1000; i++) {
-        nodes[ti]->process_message(json_o);
+        nodes[ti]->process_message_rapid(json_str, json_len);
       }
     }));
   }
@@ -63,7 +62,7 @@ TEST_F(ClientHandlerFixture, advertise_topic_is_thread_safe)
   auto server_node = std::make_shared<rclcpp::Node>("server_node");
   auto node_interface = std::make_shared<rws::NodeInterfaceImpl>(server_node);
   auto connector = std::make_shared<rws::Connector<>>(node_interface);
-  auto json_o = json::parse(R"(
+  const char* json_str = R"(
     {
       "op": "advertise",
       "history_depth": 10,
@@ -71,7 +70,8 @@ TEST_F(ClientHandlerFixture, advertise_topic_is_thread_safe)
       "topic": "/test",
       "latch": false
     }
-  )");
+  )";
+  const size_t json_len = strlen(json_str);
   const int nodes_count = 50;
 
   std::vector<std::thread> threads;
@@ -80,9 +80,9 @@ TEST_F(ClientHandlerFixture, advertise_topic_is_thread_safe)
     nodes.push_back(std::make_shared<rws::ClientHandler>(
       ti, node_interface, connector, false, [](std::string &) {},
       [](std::vector<std::uint8_t> &) {}));
-    threads.push_back(std::thread([ti, nodes, &json_o]() {
+    threads.push_back(std::thread([ti, nodes, json_str, json_len]() {
       for (int i = 0; i < 1000; i++) {
-        nodes[ti]->process_message(json_o);
+        nodes[ti]->process_message_rapid(json_str, json_len);
       }
     }));
   }
@@ -99,12 +99,13 @@ TEST_F(ClientHandlerFixture, rosapi_topic_and_raw_types_is_thread_safe)
   auto server_node = std::make_shared<rclcpp::Node>("server_node");
   auto node_interface = std::make_shared<rws::NodeInterfaceImpl>(server_node);
   auto connector = std::make_shared<rws::Connector<>>(node_interface);
-  auto json_o = json::parse(R"(
+  const char* json_str = R"(
     {
       "op": "call_service",
       "service": "/rosapi/topics_and_raw_types"
     }
-  )");
+  )";
+  const size_t json_len = strlen(json_str);
   const int nodes_count = 20;
 
   std::vector<std::thread> threads;
@@ -113,9 +114,9 @@ TEST_F(ClientHandlerFixture, rosapi_topic_and_raw_types_is_thread_safe)
     nodes.push_back(std::make_shared<rws::ClientHandler>(
       ti, node_interface, connector, true, [](std::string &) {},
       [](std::vector<std::uint8_t> &) {}));
-    threads.push_back(std::thread([ti, nodes, &json_o]() {
+    threads.push_back(std::thread([ti, nodes, json_str, json_len]() {
       for (int i = 0; i < 1000; i++) {
-        nodes[ti]->process_message(json_o);
+        nodes[ti]->process_message_rapid(json_str, json_len);
       }
     }));
   }

@@ -21,7 +21,7 @@
 #include <string>
 #include <unordered_map>
 
-#include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "action_msgs/msg/goal_status_array.hpp"
@@ -41,8 +41,6 @@ namespace rws
 
 using rosidl_typesupport_introspection_cpp::MessageMembers;
 using rosidl_typesupport_introspection_cpp::ServiceMembers;
-
-using json = nlohmann::json;
 
 /// A generic action client that works with runtime-determined action types.
 class GenericActionClient : public rclcpp_action::ClientBase
@@ -70,14 +68,14 @@ public:
 
   /// Send an action goal asynchronously.
   /**
-   * \param[in] goal_json JSON object containing the goal fields
+   * \param[in] goal_json RapidJSON Value containing the goal fields
    * \param[in] goal_response_callback Called when goal is accepted/rejected
    * \param[in] feedback_callback Called when feedback is received (optional)
    * \param[in] result_callback Called when result is received
    * \return The goal UUID
    */
   GoalUUID async_send_goal(
-    const json & goal_json,
+    const rapidjson::Value & goal_json,
     GoalResponseCallback goal_response_callback,
     FeedbackCallback feedback_callback,
     ResultCallback result_callback);

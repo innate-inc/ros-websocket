@@ -15,7 +15,10 @@
 #ifndef RWS__TRANSLATE_HPP_
 #define RWS__TRANSLATE_HPP_
 
-#include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
+#include <rapidjson/writer.h>
+#include <rapidjson/stringbuffer.h>
+#include <memory>
 #include <string>
 
 #include "rclcpp/serialized_message.hpp"
@@ -24,50 +27,52 @@
 namespace rws
 {
 
-using json = nlohmann::json;
 using SharedMessage = std::shared_ptr<rclcpp::SerializedMessage>;
 using ConstSharedMessage = std::shared_ptr<const rclcpp::SerializedMessage>;
 using rosidl_typesupport_introspection_cpp::MessageMembers;
 
-/// Translate serialized message to json object
+// RapidJSON type aliases
+using RapidWriter = rapidjson::Writer<rapidjson::StringBuffer>;
+
+/// Translate serialized message to RapidJSON Value
 /**
  * \param msg_type Message type, e.g. "std_msgs/String"
  * \param[in] msg Serialized message
- * \return Json representation of the message
+ * \param[out] doc RapidJSON document to populate
  */
-json serialized_message_to_json(const std::string & msg_type, ConstSharedMessage msg);
+void serialized_message_to_json(const std::string & msg_type, ConstSharedMessage msg, rapidjson::Document & doc);
 
-/// Translate json object to serialized message
+/// Translate RapidJSON Value to serialized message
 /**
  * \param[in] msg_type Message type, e.g. "std_msgs/msg/String"
- * \param[in] j Json representation of the message
+ * \param[in] value RapidJSON Value representation of the message
  * \return Serialized message
  */
-SharedMessage json_to_serialized_message(const std::string & msg_type, const json & j);
+SharedMessage json_to_serialized_message(const std::string & msg_type, const rapidjson::Value & value);
 
-/// Translate json object to serialized service request
+/// Translate RapidJSON Value to serialized service request
 /**
  * \param[in] srv_type Service type, e.g. "std_srvs/srv/SetBool"
- * \param[in] j Json representation of service request
+ * \param[in] value RapidJSON Value representation of service request
  * \return Serialized service request
  */
-SharedMessage json_to_serialized_service_request(const std::string & srv_type, const json & j);
+SharedMessage json_to_serialized_service_request(const std::string & srv_type, const rapidjson::Value & value);
 
-/// Translate serialized service response to json object
+/// Translate serialized service response to RapidJSON and write directly
 /**
  * \param[in] srv_type Service type, e.g. "std_srvs/srv/SetBool"
  * \param[in] msg Serialized service response
- * \return Json representation of the service response
+ * \param[out] writer RapidJSON writer to output to
  */
-json serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg);
+void serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg, RapidWriter & writer);
 
-/// Populate a ROS message from JSON using introspection
+/// Populate a ROS message from RapidJSON using introspection
 /**
- * \param[in] j Json representation of the message fields
+ * \param[in] value RapidJSON Value representation of the message fields
  * \param[in] members MessageMembers introspection data
  * \param[out] message Pointer to the pre-allocated ROS message to populate
  */
-void json_to_ros_message(const json & j, const MessageMembers * members, void * message);
+void json_to_ros_message(const rapidjson::Value & value, const MessageMembers * members, void * message);
 
 /// Fast serialize ROS message to JSON string for publish op using RapidJSON
 /**
@@ -85,6 +90,13 @@ std::string build_publish_message(const std::string & topic, const std::string &
  * \return String representation of the message structure
  */
 std::string generate_message_meta(const std::string & msg_type, bool rosbridge_compatible = false);
+
+/// Convert ROS1-style message type to ROS2 style
+/**
+ * \param[in] type Message type in ROS1 style (e.g. "std_msgs/String")
+ * \return Message type in ROS2 style (e.g. "std_msgs/msg/String")
+ */
+std::string message_type_to_ros2_style(const std::string & type);
 
 }  // namespace rws
 

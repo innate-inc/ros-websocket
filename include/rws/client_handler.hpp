@@ -15,7 +15,6 @@
 #ifndef RWS__NODE_HPP_
 #define RWS__NODE_HPP_
 
-#include <nlohmann/json.hpp>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -28,8 +27,6 @@
 namespace rws
 {
 
-using json = nlohmann::json;
-
 // RapidJSON writer type alias
 using RapidWriter = rapidjson::Writer<rapidjson::StringBuffer>;
 
@@ -41,9 +38,6 @@ public:
     std::shared_ptr<Connector<>> connector, bool rosbridge_compatible,
     std::function<void(std::string & msg)> callback,
     std::function<void(std::vector<std::uint8_t> & msg)> binary_callback);
-  
-  /// Process incoming message (old nlohmann version - kept for reference)
-  json process_message(json & msg);
   
   /// Process incoming message - fast RapidJSON version
   std::string process_message_rapid(const char* data, size_t length);
@@ -74,23 +68,7 @@ private:
   void send_message(std::string & msg);
   void send_message(std::vector<std::uint8_t> & msg);
 
-  // Topic handlers (old nlohmann versions)
-  bool subscribe_to_topic(const json & request, json & response_out);
-  bool unsubscribe_from_topic(const json & request, json & response_out);
-  bool advertise_topic(const json & request, json & response_out);
-  bool unadvertise_topic(const json & request, json & response_out);
-  bool publish_to_topic(const json & request, json & response_out);
   void subscription_callback(topic_params & params, std::shared_ptr<const rclcpp::SerializedMessage> message);
-
-  // Service handlers (old nlohmann versions)
-  bool call_service(const json & request, json & response_out);
-  bool call_external_service(const json & request, json & response_out);
-
-  // Action handlers (old nlohmann versions)
-  bool send_action_goal(const json & request, json & response_out);
-  bool cancel_action_goal(const json & request, json & response_out);
-  GenericActionClient::SharedPtr get_or_create_action_client(
-    const std::string & action_name, const std::string & action_type);
 
   // RapidJSON versions of handlers
   bool subscribe_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
@@ -101,6 +79,10 @@ private:
   bool call_service_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
+  
+  // Helper for action client
+  GenericActionClient::SharedPtr get_or_create_action_client(
+    const std::string & action_name, const std::string & action_type);
 };
 
 }  // namespace rws

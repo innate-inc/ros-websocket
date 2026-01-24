@@ -16,7 +16,6 @@
 
 #include <chrono>
 #include <cstdio>
-#include <nlohmann/json.hpp>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -29,7 +28,6 @@
 namespace rws
 {
 
-using json = nlohmann::json;
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 
@@ -71,58 +69,6 @@ ClientHandler::~ClientHandler()
     string_thread_id().c_str()); 
 }
 
-json ClientHandler::process_message(json & msg)
-{
-    bool handled = false;
-    json response = {{"id", msg["id"]}, {"result", false}};
-
-    if (!msg.contains("op")) {
-      response["error"] = "No op specified";
-      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-      return response;
-    }
-
-    std::string op = msg["op"];
-
-    if (op == "call_service") {
-      handled = call_service(msg, response);
-    }
-
-    if (op == "subscribe") {
-      handled = subscribe_to_topic(msg, response);
-    }
-
-    if (op == "advertise") {
-      handled = advertise_topic(msg, response);
-    }
-
-    if (op == "unadvertise") {
-      handled = unadvertise_topic(msg, response);
-    }
-
-    if (op == "publish") {
-      handled = publish_to_topic(msg, response);
-    }
-
-    if (op == "unsubscribe") {
-      handled = unsubscribe_from_topic(msg, response);
-    }
-
-    if (op == "send_action_goal") {
-      handled = send_action_goal(msg, response);
-    }
-
-    if (op == "cancel_action_goal") {
-      handled = cancel_action_goal(msg, response);
-    }
-
-    if (!handled) {
-      RCLCPP_WARN(get_logger(), "Unhadled request: %s", msg.dump().c_str());
-    }
-
-    return response;
-}
-
 void ClientHandler::send_message(std::string & msg)
 {
   if (this->callback_) {
@@ -151,639 +97,17 @@ void ClientHandler::subscription_callback(topic_params & params, std::shared_ptr
     return;
   }
 
-  // Toggle for benchmarking: true = RapidJSON (fast), false = nlohmann/json (old)
-  constexpr bool use_rapidjson = true;
-
-  std::string json_str;
-  if constexpr (use_rapidjson) {
-    // Fast path: use RapidJSON to build complete publish message
-    json_str = rws::build_publish_message(params.topic, sub_type, message);
-  } else {
-    // Old path: use nlohmann/json
-    json msg_json = rws::serialized_message_to_json(sub_type, message);
-    json m = {
-      {"op", "publish"},
-      {"topic", params.topic},
-      {"msg", msg_json},
-    };
-    json_str = m.dump();
-  }
+  // Use RapidJSON to build complete publish message
+  std::string json_str = rws::build_publish_message(params.topic, sub_type, message);
   this->send_message(json_str);
 }
 
-bool ClientHandler::subscribe_to_topic(const json & msg, json & response)
-{
-  response["op"] = "subscribe_response";
-  if (!msg.contains("topic") || !msg.at("topic").is_string()) {
-    response["result"] = false;
-    response["error"] = "No topic specified";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string topic = msg.at("topic");
-  std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
-  if (topics.find(topic) == topics.end()) {
-    response["error"] = "Topic " + topic + " not found";
-    response["result"] = false;
-    RCLCPP_ERROR(
-      get_logger(), "Failed to subscribe to topic: %s", response["error"].dump().c_str());
-    return true;
-  }
-  size_t history_depth = 10;
-  if (msg.contains("history_depth") && msg.at("history_depth").is_number()) {
-    history_depth = msg.at("history_depth");
-  } else if (msg.contains("queue_size") && msg.at("queue_size").is_number()) {
-    history_depth = msg.at("queue_size");
-  }
-  rclcpp::Duration throttle_rate(0, 0);
-  if (msg.contains("throttle_rate") && msg.at("throttle_rate").is_number()) {
-    size_t throttle_rate_ms = msg.at("throttle_rate");
-    throttle_rate = rclcpp::Duration(0, throttle_rate_ms * 1000000);
-  }
-  std::string compression =
-    (!msg.contains("compression") || !msg.at("compression").is_string()) ? "none" : msg.at("compression");
-
-  auto sub_type = topics[topic][0];
-  if (subscriptions_.count(topic) == 0) {
-    
-    topic_params params(topic, sub_type, history_depth, compression, throttle_rate);
-    subscriptions_[topic] = connector_->subscribe_to_topic(
-      client_id_, params, std::bind(&ClientHandler::subscription_callback, this, std::placeholders::_1, std::placeholders::_2));
-
-    response["type"] = sub_type;
-    response["result"] = true;
-  }
-
-  return true;
-}
-
-bool ClientHandler::unsubscribe_from_topic(const json & msg, json & response)
-{
-  response["op"] = "unsubscribe_response";
-
-  std::string topic = msg.at("topic");
-  if (subscriptions_.count(topic) > 0) {
-    subscriptions_[topic]();
-    subscriptions_.erase(topic);
-    response["result"] = true;
-  }
-
-  return true;
-}
-
-bool ClientHandler::advertise_topic(const json & msg, json & response)
-{
-  response["op"] = "advertise_response";
-
-  if (!msg.contains("topic") || !msg.at("topic").is_string()) {
-    response["result"] = false;
-    response["error"] = "No topic specified";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string topic = msg.at("topic");
-  std::string type;
-
-  if (msg.contains("type") && msg.at("type").is_string() && !msg.at("type").get<std::string>().empty()) {
-    type = rws::message_type_to_ros2_style(msg.at("type"));
-  } else {
-    // Look up type from existing topics
-    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
-    if (topics.find(topic) != topics.end() && !topics[topic].empty()) {
-      type = topics[topic][0];
-    } else {
-      response["result"] = false;
-      response["error"] = "No type specified and topic not found for type lookup";
-      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-      return true;
-    }
-  }
-  size_t history_depth = 10;
-  if (msg.contains("history_depth") && msg.at("history_depth").is_number()) {
-    history_depth = msg.at("history_depth");
-  } else if (msg.contains("queue_size") && msg.at("queue_size").is_number()) {
-    history_depth = msg.at("queue_size");
-  }
-  bool latch =
-    (msg.contains("latch") && msg.at("latch").is_boolean()) ? msg.at("latch").get<bool>() : false;
-  topic_params params(topic, type, history_depth, latch);
-
-  if (publishers_.count(topic) == 0) {
-    publishers_[topic] = connector_->advertise_topic(client_id_, params, publisher_cb_[topic]);
-    publisher_type_[topic] = type;
-    response["result"] = true;
-  }
-
-  return true;
-}
-
-bool ClientHandler::unadvertise_topic(const json & msg, json & response)
-{
-  response["op"] = "unadvertise_response";
-
-  std::string topic = msg.at("topic");
-  if (publishers_.count(topic) > 0) {
-    publishers_[topic]();
-    publishers_.erase(topic);
-    publisher_cb_.erase(topic);
-    publisher_type_.erase(topic);
-    response["result"] = true;
-  }
-
-  return true;
-}
-
-bool ClientHandler::publish_to_topic(const json & msg, json & response)
-{
-  response["op"] = "publish_response";
-
-  if (!msg.contains("topic")) {
-    response["result"] = false;
-    response["error"] = "No topic specified";
-    RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string topic = msg.at("topic");
-
-  // Auto-advertise if not already advertised
-  if (publishers_.count(topic) == 0) {
-    json advertise_response;
-    if (!advertise_topic(msg, advertise_response) || !advertise_response["result"].get<bool>()) {
-      response["result"] = false;
-      response["error"] = advertise_response.value("error", "Failed to auto-advertise topic");
-      RCLCPP_ERROR(get_logger(), response["error"].dump().c_str());
-      return true;
-    }
-  }
-
-  json msg_json = msg.at("msg");
-  std::string type = publisher_type_[topic];
-  auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
-  publisher_cb_[topic](serialized_msg);
-  response["result"] = true;
-
-  return true;
-}
-
-bool ClientHandler::call_service(const json & msg, json & response)
-{
-  if (!msg.contains("service")) {
-    RCLCPP_ERROR(get_logger(), "No service specified");
-    return true;
-  }
-  std::string service = msg.at("service");
-
-  RCLCPP_DEBUG(get_logger(), "call_service: %s", service.c_str());
-
-  response["op"] = "service_response";
-  response["service"] = service;
-  response["result"] = false;
-
-  if (service == "/rosapi/topics_and_raw_types" || service == "/rosapi/topics") {
-    response["values"]["topics"] = json::array();
-    response["values"]["types"] = json::array();
-
-    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
-    for (auto it = topics.begin(); it != topics.end(); ++it) {
-      response["values"]["topics"].push_back(it->first);
-      response["values"]["types"].push_back(it->second[0]);
-
-      if (msg.at("service") == "/rosapi/topics_and_raw_types") {
-        response["values"]["typedefs_full_text"].push_back(
-          rws::generate_message_meta(it->second[0], rosbridge_compatible_));
-      }
-    }
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/service_type") {
-    std::string service_name = msg.at("args").at("service");
-    std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
-    if (services.find(service_name) == services.end()) {
-      RCLCPP_ERROR(get_logger(), "Service not found: %s", service_name.c_str());
-      return true;
-    }
-
-    std::string service_type = services[service_name][0];
-    response["values"]["type"] = service_type;
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/nodes") {
-    response["values"]["nodes"] = json::array();
-
-    std::vector<std::string> nodes = node_->get_node_names();
-    for (auto it = nodes.begin(); it != nodes.end(); ++it) {
-      response["values"]["nodes"].push_back(*it);
-    }
-
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/publishers") {
-    response["values"]["publishers"] = json::array();
-
-    std::vector<rclcpp::TopicEndpointInfo> publishers = node_->get_publishers_info_by_topic(msg.at("args").at("topic"));
-    for (const auto & pub_info : publishers) {
-      response["values"]["publishers"].push_back(("/" + pub_info.node_name()).c_str());
-    }
-
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/subscribers") {
-    response["values"]["subscribers"] = json::array();
-
-    std::vector<rclcpp::TopicEndpointInfo> subscribers = node_->get_subscriptions_info_by_topic(msg.at("args").at("topic"));
-    for (const auto & sub_info : subscribers) {
-      response["values"]["subscribers"].push_back(("/" + sub_info.node_name()).c_str());
-    }
-
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/node_details") {
-    response["values"]["subscribing"] = json::array();
-    response["values"]["publishing"] = json::array();
-    response["values"]["services"] = json::array();
-
-    auto [ns, node_name] = split_ns_node_name(msg.at("args").at("node"));
-
-    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
-    for (auto it = topics.begin(); it != topics.end(); ++it) {
-      auto subscribers = node_->get_subscriptions_info_by_topic(it->first);
-      for (auto sub_it = subscribers.begin(); sub_it != subscribers.end(); ++sub_it) {
-        std::string sub_node = sub_it->node_name();
-        std::string sub_ns = sub_it->node_namespace() == "/" ? "" : sub_it->node_namespace();
-        if (sub_ns + sub_node == ns + node_name) {
-          response["values"]["subscribing"].push_back(it->first);
-        }
-      }
-
-      auto publishers = node_->get_publishers_info_by_topic(it->first);
-      for (auto pub_it = publishers.begin(); pub_it != publishers.end(); ++pub_it) {
-        std::string pub_node = pub_it->node_name();
-        std::string pub_ns = pub_it->node_namespace() == "/" ? "" : pub_it->node_namespace();
-        if (pub_ns + pub_node == ns + node_name) {
-          response["values"]["publishing"].push_back(it->first);
-        }
-      }
-    }
-
-    try {
-      auto services = node_->get_service_names_and_types_by_node(node_name, ns);
-      for (auto it = services.begin(); it != services.end(); ++it) {
-        response["values"]["services"].push_back(it->first);
-      }
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(
-        get_logger(), "Exception while fetching services for node(%s), ns=%s, name=%s: %s",
-        msg.at("args").at("node").get<std::string>().c_str(), ns.c_str(), node_name.c_str(), e.what());
-    }
-
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/topic_type") {
-    std::string topic_name = msg.at("args").at("topic").get<std::string>();
-    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types(); 
-    if (topics.find(topic_name) == topics.end()) {
-      RCLCPP_ERROR(get_logger(), "Topic not found: %s", topic_name.c_str());
-      return true;
-    }
-
-    response["values"]["type"] = topics[topic_name][0];
-    response["result"] = true;
-    return true;
-  }
-
-  if (service == "/rosapi/services_for_type") {
-    std::string service_type = msg.at("args").at("type").get<std::string>();
-    auto service_name_and_types = node_->get_service_names_and_types();
-
-    std::map<std::string, std::vector<std::string>> filtered_service_name_and_types;
-    for (const auto &pair : service_name_and_types) {
-      for (const auto &type : pair.second) {
-        if (type == service_type) {
-          filtered_service_name_and_types.insert(pair);
-          break;
-        }
-      }
-    }
-
-    response["values"]["services"] = json::array();
-    for (auto it = filtered_service_name_and_types.begin(); it != filtered_service_name_and_types.end(); ++it) {
-      response["values"]["services"].push_back(it->first);
-    }
-
-    response["result"] = true;
-    return true;
-  }
-
-  return call_external_service(msg, response);
-}
-
-bool ClientHandler::call_external_service(const json & msg, json & response)
-{
-  std::string service_name = msg.at("service");
-  std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
-  auto service_it = services.find(service_name);
-  if (service_it == services.end()) {
-    RCLCPP_ERROR(get_logger(), "Service not found: %s", service_name.c_str());
-    return false;
-  }
-
-  std::string service_type;
-  if (msg.contains("type") && msg.at("type").is_string() && !msg.at("type").get<std::string>().empty()) {
-    service_type = msg.at("type").get<std::string>();
-  } else {
-    if (service_it->second.empty()) {
-      RCLCPP_ERROR(get_logger(), "Service has no advertised type: %s", service_name.c_str());
-      return false;
-    }
-    service_type = service_it->second.front();
-  }
-
-  if (clients_.count(service_name) == 0) {
-    clients_[service_name] = node_->create_generic_client(
-      service_name, service_type, rmw_qos_profile_services_default, nullptr);
-  }
-
-  while (!clients_[service_name]->wait_for_service(1s)) {
-    if (!rclcpp::ok()) {
-      RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
-      response["result"] = false;
-      return false;
-    }
-    RCLCPP_INFO(get_logger(), "service not available, waiting again...");
-  }
-
-  auto serialized_req = json_to_serialized_service_request(service_type, msg.at("args"));
-  using ServiceResponseFuture = rws::GenericClient::SharedFuture;
-  auto response_received_callback = [this, id = msg.at("id"), service_name,
-                                     service_type](ServiceResponseFuture future) {
-    json response_json = serialized_service_response_to_json(service_type, future.get());
-    json m = {
-      {"id", id},
-      {"op", "service_response"},
-      {"service", service_name},
-      {"values", response_json},
-      {"result", true},
-    };
-
-    std::string json_str = m.dump();
-    this->send_message(json_str);
-  };
-  clients_[service_name]->async_send_request(serialized_req, response_received_callback);
-
-  response["op"] = "call_service";
-  response["result"] = true;
-  return true;
-}
-
-GenericActionClient::SharedPtr ClientHandler::get_or_create_action_client(
-  const std::string & action_name, const std::string & action_type)
-{
-  if (action_clients_.count(action_name) == 0) {
-    action_clients_[action_name] = node_->create_generic_action_client(action_name, action_type);
-  }
-  return action_clients_[action_name];
-}
-
-bool ClientHandler::send_action_goal(const json & msg, json & response)
-{
-  if (!msg.contains("action") || !msg.at("action").is_string()) {
-    response["error"] = "No action name specified";
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string action_name = msg.at("action").get<std::string>();
-
-  if (!msg.contains("action_type") || !msg.at("action_type").is_string()) {
-    response["error"] = "No action_type specified";
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string action_type = msg.at("action_type").get<std::string>();
-  
-  // Get optional feedback flag
-  bool feedback = false;
-  if (msg.contains("feedback") && msg.at("feedback").is_boolean()) {
-    feedback = msg.at("feedback").get<bool>();
-  }
-
-  // Get goal arguments
-  json goal_args = json::object();
-  if (msg.contains("args") && msg.at("args").is_object()) {
-    goal_args = msg.at("args");
-  } else if (msg.contains("goal") && msg.at("goal").is_object()) {
-    goal_args = msg.at("goal");
-  }
-
-  try {
-    auto action_client = get_or_create_action_client(action_name, action_type);
-
-    // Callbacks for goal response, feedback, and result
-    auto goal_response_callback = [this, id = msg.at("id"), action_name](
-      bool accepted, const GenericActionClient::GoalUUID & goal_id) {
-      // Format goal_id as string for rosbridge protocol
-      std::string goal_id_str;
-      for (size_t i = 0; i < goal_id.size(); ++i) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
-        goal_id_str += buf;
-      }
-
-      json m = {
-        {"op", "action_result"},
-        {"id", id},
-        {"action", action_name},
-        {"goal_id", goal_id_str},
-        {"status", accepted ? "accepted" : "rejected"},
-        {"result", accepted},
-      };
-
-      std::string json_str = m.dump();
-      this->send_message(json_str);
-    };
-
-    GenericActionClient::FeedbackCallback feedback_callback = nullptr;
-    if (feedback) {
-      feedback_callback = [this, id = msg.at("id"), action_name, action_type](
-        const GenericActionClient::GoalUUID & goal_id,
-        GenericActionClient::SharedResponse feedback_msg) {
-        // Format goal_id as string
-        std::string goal_id_str;
-        for (size_t i = 0; i < goal_id.size(); ++i) {
-          char buf[3];
-          snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
-          goal_id_str += buf;
-        }
-
-        // Deserialize feedback to JSON
-        json feedback_json = serialized_message_to_json(
-          action_type + "_Feedback", feedback_msg);
-
-        json m = {
-          {"op", "action_feedback"},
-          {"id", id},
-          {"action", action_name},
-          {"goal_id", goal_id_str},
-          {"values", feedback_json},
-        };
-
-        std::string json_str = m.dump();
-        this->send_message(json_str);
-      };
-    }
-
-    auto result_callback = [this, id = msg.at("id"), action_name, action_type](
-      const GenericActionClient::GoalUUID & goal_id,
-      int8_t status,
-      GenericActionClient::SharedResponse result_msg) {
-      // Format goal_id as string
-      std::string goal_id_str;
-      for (size_t i = 0; i < goal_id.size(); ++i) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
-        goal_id_str += buf;
-      }
-
-      // Deserialize result to JSON
-      json result_json = serialized_message_to_json(
-        action_type + "_Result", result_msg);
-
-      // Map status to string
-      std::string status_str;
-      switch (status) {
-        case 1: status_str = "executing"; break;
-        case 2: status_str = "canceling"; break;
-        case 4: status_str = "succeeded"; break;
-        case 5: status_str = "canceled"; break;
-        case 6: status_str = "aborted"; break;
-        default: status_str = "unknown"; break;
-      }
-
-      json m = {
-        {"op", "action_result"},
-        {"id", id},
-        {"action", action_name},
-        {"goal_id", goal_id_str},
-        {"status", status_str},
-        {"values", result_json},
-        {"result", status == 4},  // true if succeeded
-      };
-
-      std::string json_str = m.dump();
-      this->send_message(json_str);
-    };
-
-    auto goal_id = action_client->async_send_goal(
-      goal_args, goal_response_callback, feedback_callback, result_callback);
-
-    // Format goal_id as string for initial response
-    std::string goal_id_str;
-    for (size_t i = 0; i < goal_id.size(); ++i) {
-      char buf[3];
-      snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
-      goal_id_str += buf;
-    }
-
-    response["op"] = "send_action_goal";
-    response["goal_id"] = goal_id_str;
-    response["result"] = true;
-    return true;
-
-  } catch (const std::exception & e) {
-    response["error"] = std::string("Failed to send action goal: ") + e.what();
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-}
-
-bool ClientHandler::cancel_action_goal(const json & msg, json & response)
-{
-  if (!msg.contains("action") || !msg.at("action").is_string()) {
-    response["error"] = "No action name specified";
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string action_name = msg.at("action").get<std::string>();
-
-  if (action_clients_.count(action_name) == 0) {
-    response["error"] = "No active action client for: " + action_name;
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  if (!msg.contains("goal_id") || !msg.at("goal_id").is_string()) {
-    response["error"] = "No goal_id specified";
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  std::string goal_id_str = msg.at("goal_id").get<std::string>();
-  
-  // Parse goal_id from hex string
-  GenericActionClient::GoalUUID goal_id;
-  if (goal_id_str.length() == 32) {  // 16 bytes * 2 hex chars
-    for (size_t i = 0; i < 16; ++i) {
-      goal_id[i] = static_cast<uint8_t>(
-        std::stoul(goal_id_str.substr(i * 2, 2), nullptr, 16));
-    }
-  } else {
-    response["error"] = "Invalid goal_id format";
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-
-  try {
-    action_clients_[action_name]->async_cancel_goal(
-      goal_id,
-      [this, id = msg.at("id"), action_name, goal_id_str](bool success) {
-        json m = {
-          {"op", "cancel_action_goal"},
-          {"id", id},
-          {"action", action_name},
-          {"goal_id", goal_id_str},
-          {"result", success},
-        };
-
-        std::string json_str = m.dump();
-        this->send_message(json_str);
-      });
-
-    response["op"] = "cancel_action_goal";
-    response["result"] = true;
-    return true;
-
-  } catch (const std::exception & e) {
-    response["error"] = std::string("Failed to cancel action goal: ") + e.what();
-    RCLCPP_ERROR(get_logger(), "%s", response["error"].dump().c_str());
-    return true;
-  }
-}
-
 // ============================================================================
-// RapidJSON implementations below
+// Helper functions for RapidJSON
 // ============================================================================
 
-// Helper to safely get string from RapidJSON
-static inline const char* get_string(const rapidjson::Value& v, const char* key, const char* def = "") {
-  if (v.HasMember(key) && v[key].IsString()) return v[key].GetString();
-  return def;
+static inline bool has_string(const rapidjson::Value& v, const char* key) {
+  return v.HasMember(key) && v[key].IsString();
 }
 
 static inline bool get_bool(const rapidjson::Value& v, const char* key, bool def = false) {
@@ -791,15 +115,19 @@ static inline bool get_bool(const rapidjson::Value& v, const char* key, bool def
   return def;
 }
 
-static inline int64_t get_int(const rapidjson::Value& v, const char* key, int64_t def = 0) {
-  if (v.HasMember(key) && v[key].IsInt64()) return v[key].GetInt64();
-  if (v.HasMember(key) && v[key].IsInt()) return v[key].GetInt();
-  return def;
+// Helper to write the id field from document to writer
+static void write_id(const rapidjson::Document& msg, RapidWriter& w) {
+  if (msg.HasMember("id")) {
+    w.Key("id");
+    if (msg["id"].IsString()) w.String(msg["id"].GetString());
+    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
+    else if (msg["id"].IsUint()) w.Uint(msg["id"].GetUint());
+  }
 }
 
-static inline bool has_string(const rapidjson::Value& v, const char* key) {
-  return v.HasMember(key) && v[key].IsString();
-}
+// ============================================================================
+// RapidJSON message processing
+// ============================================================================
 
 std::string ClientHandler::process_message_rapid(const char* data, size_t length)
 {
@@ -820,11 +148,7 @@ std::string ClientHandler::process_message_rapid(const char* data, size_t length
   
   if (!doc.HasMember("op") || !doc["op"].IsString()) {
     writer.StartObject();
-    if (doc.HasMember("id")) {
-      writer.Key("id");
-      if (doc["id"].IsString()) writer.String(doc["id"].GetString());
-      else if (doc["id"].IsInt()) writer.Int(doc["id"].GetInt());
-    }
+    write_id(doc, writer);
     writer.Key("error"); writer.String("No op specified");
     writer.Key("result"); writer.Bool(false);
     writer.EndObject();
@@ -854,15 +178,10 @@ std::string ClientHandler::process_message_rapid(const char* data, size_t length
   
   if (!handled) {
     RCLCPP_WARN(get_logger(), "Unhandled request op: %s", op);
-    // Return empty response for unhandled
     buffer.Clear();
     writer.Reset(buffer);
     writer.StartObject();
-    if (doc.HasMember("id")) {
-      writer.Key("id");
-      if (doc["id"].IsString()) writer.String(doc["id"].GetString());
-      else if (doc["id"].IsInt()) writer.Int(doc["id"].GetInt());
-    }
+    write_id(doc, writer);
     writer.Key("result"); writer.Bool(false);
     writer.Key("error"); writer.String("Unknown operation");
     writer.EndObject();
@@ -874,14 +193,7 @@ std::string ClientHandler::process_message_rapid(const char* data, size_t length
 bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
 {
   w.StartObject();
-  
-  // Copy id if present
-  if (msg.HasMember("id")) {
-    w.Key("id");
-    if (msg["id"].IsString()) w.String(msg["id"].GetString());
-    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-  }
-  
+  write_id(msg, w);
   w.Key("op"); w.String("subscribe_response");
   
   if (!has_string(msg, "topic")) {
@@ -937,13 +249,7 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
 bool ClientHandler::unsubscribe_from_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
 {
   w.StartObject();
-  
-  if (msg.HasMember("id")) {
-    w.Key("id");
-    if (msg["id"].IsString()) w.String(msg["id"].GetString());
-    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-  }
-  
+  write_id(msg, w);
   w.Key("op"); w.String("unsubscribe_response");
   
   if (has_string(msg, "topic")) {
@@ -966,13 +272,7 @@ bool ClientHandler::unsubscribe_from_topic_rapid(const rapidjson::Document & msg
 bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
 {
   w.StartObject();
-  
-  if (msg.HasMember("id")) {
-    w.Key("id");
-    if (msg["id"].IsString()) w.String(msg["id"].GetString());
-    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-  }
-  
+  write_id(msg, w);
   w.Key("op"); w.String("advertise_response");
   
   if (!has_string(msg, "topic")) {
@@ -1026,13 +326,7 @@ bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapid
 bool ClientHandler::unadvertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
 {
   w.StartObject();
-  
-  if (msg.HasMember("id")) {
-    w.Key("id");
-    if (msg["id"].IsString()) w.String(msg["id"].GetString());
-    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-  }
-  
+  write_id(msg, w);
   w.Key("op"); w.String("unadvertise_response");
   
   if (has_string(msg, "topic")) {
@@ -1054,16 +348,10 @@ bool ClientHandler::unadvertise_topic_rapid(const rapidjson::Document & msg, rap
   return true;
 }
 
-bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
   w.StartObject();
-  
-  if (msg.HasMember("id")) {
-    w.Key("id");
-    if (msg["id"].IsString()) w.String(msg["id"].GetString());
-    else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-  }
-  
+  write_id(msg, w);
   w.Key("op"); w.String("publish_response");
   
   if (!has_string(msg, "topic")) {
@@ -1094,6 +382,13 @@ bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapi
       w.EndObject();
       return true;
     }
+    
+    // Reset the buffer and writer since advertise wrote to it
+    buf.Clear();
+    w.Reset(buf);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("publish_response");
   }
   
   if (!msg.HasMember("msg") || !msg["msg"].IsObject()) {
@@ -1103,15 +398,8 @@ bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapi
     return true;
   }
   
-  // Convert rapidjson Value to nlohmann::json for serialization
-  // (keep using nlohmann for the ROS message serialization path for now)
-  rapidjson::StringBuffer msg_buf;
-  rapidjson::Writer<rapidjson::StringBuffer> msg_writer(msg_buf);
-  msg["msg"].Accept(msg_writer);
-  
-  json msg_json = json::parse(msg_buf.GetString());
   std::string type = publisher_type_[topic];
-  auto serialized_msg = rws::json_to_serialized_message(type, msg_json);
+  auto serialized_msg = rws::json_to_serialized_message(type, msg["msg"]);
   publisher_cb_[topic](serialized_msg);
   
   w.Key("result"); w.Bool(true);
@@ -1123,11 +411,7 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
 {
   if (!has_string(msg, "service")) {
     w.StartObject();
-    if (msg.HasMember("id")) {
-      w.Key("id");
-      if (msg["id"].IsString()) w.String(msg["id"].GetString());
-      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-    }
+    write_id(msg, w);
     w.Key("error"); w.String("No service specified");
     w.Key("result"); w.Bool(false);
     w.EndObject();
@@ -1139,58 +423,32 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
   
   RCLCPP_DEBUG(get_logger(), "call_service_rapid: %s", service.c_str());
   
-  // Handle rosapi services inline
+  // Handle rosapi services
   if (service == "/rosapi/topics_and_raw_types" || service == "/rosapi/topics") {
     w.StartObject();
-    if (msg.HasMember("id")) {
-      w.Key("id");
-      if (msg["id"].IsString()) w.String(msg["id"].GetString());
-      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-    }
+    write_id(msg, w);
     w.Key("op"); w.String("service_response");
     w.Key("service"); w.String(service.c_str());
-    
     w.Key("values");
     w.StartObject();
-    
-    w.Key("topics"); w.StartArray();
-    w.Key("types"); w.StartArray();
     
     std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
-    std::vector<std::pair<std::string, std::string>> topic_list;
-    for (auto& t : topics) {
-      topic_list.push_back({t.first, t.second[0]});
-    }
-    
-    // Write topics array
-    buf.Clear();
-    w.Reset(buf);
-    w.StartObject();
-    if (msg.HasMember("id")) {
-      w.Key("id");
-      if (msg["id"].IsString()) w.String(msg["id"].GetString());
-      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-    }
-    w.Key("op"); w.String("service_response");
-    w.Key("service"); w.String(service.c_str());
-    w.Key("values");
-    w.StartObject();
     
     w.Key("topics");
     w.StartArray();
-    for (auto& t : topic_list) w.String(t.first.c_str());
+    for (auto& t : topics) w.String(t.first.c_str());
     w.EndArray();
     
     w.Key("types");
     w.StartArray();
-    for (auto& t : topic_list) w.String(t.second.c_str());
+    for (auto& t : topics) w.String(t.second[0].c_str());
     w.EndArray();
     
     if (service == "/rosapi/topics_and_raw_types") {
       w.Key("typedefs_full_text");
       w.StartArray();
-      for (auto& t : topic_list) {
-        w.String(rws::generate_message_meta(t.second, rosbridge_compatible_).c_str());
+      for (auto& t : topics) {
+        w.String(rws::generate_message_meta(t.second[0], rosbridge_compatible_).c_str());
       }
       w.EndArray();
     }
@@ -1201,13 +459,40 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     return true;
   }
   
+  if (service == "/rosapi/service_type") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    
+    if (!msg.HasMember("args") || !msg["args"].HasMember("service")) {
+      w.Key("result"); w.Bool(false);
+      w.EndObject();
+      return true;
+    }
+    
+    std::string service_name = msg["args"]["service"].GetString();
+    std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
+    if (services.find(service_name) == services.end()) {
+      RCLCPP_ERROR(get_logger(), "Service not found: %s", service_name.c_str());
+      w.Key("result"); w.Bool(false);
+      w.EndObject();
+      return true;
+    }
+
+    std::string service_type = services[service_name][0];
+    w.Key("values");
+    w.StartObject();
+    w.Key("type"); w.String(service_type.c_str());
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
   if (service == "/rosapi/nodes") {
     w.StartObject();
-    if (msg.HasMember("id")) {
-      w.Key("id");
-      if (msg["id"].IsString()) w.String(msg["id"].GetString());
-      else if (msg["id"].IsInt()) w.Int(msg["id"].GetInt());
-    }
+    write_id(msg, w);
     w.Key("op"); w.String("service_response");
     w.Key("service"); w.String(service.c_str());
     w.Key("values");
@@ -1222,64 +507,602 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     return true;
   }
   
-  // For other services, fall back to nlohmann parsing (external service calls are rare)
-  // Convert to nlohmann::json and use old path
-  rapidjson::StringBuffer full_buf;
-  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
-  msg.Accept(full_w);
-  
-  json nlohmann_msg = json::parse(full_buf.GetString());
-  json nlohmann_response;
-  call_service(nlohmann_msg, nlohmann_response);
-  
-  std::string resp_str = nlohmann_response.dump();
-  buf.Clear();
-  // Copy the response string directly
-  for (size_t i = 0; i < resp_str.size(); i++) {
-    buf.Put(resp_str[i]);
+  if (service == "/rosapi/publishers") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("values");
+    w.StartObject();
+    w.Key("publishers");
+    w.StartArray();
+    
+    if (msg.HasMember("args") && msg["args"].HasMember("topic")) {
+      std::vector<rclcpp::TopicEndpointInfo> publishers = 
+        node_->get_publishers_info_by_topic(msg["args"]["topic"].GetString());
+      for (const auto & pub_info : publishers) {
+        std::string name = "/" + pub_info.node_name();
+        w.String(name.c_str());
+      }
+    }
+    
+    w.EndArray();
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
   }
   
+  if (service == "/rosapi/subscribers") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("values");
+    w.StartObject();
+    w.Key("subscribers");
+    w.StartArray();
+    
+    if (msg.HasMember("args") && msg["args"].HasMember("topic")) {
+      std::vector<rclcpp::TopicEndpointInfo> subscribers = 
+        node_->get_subscriptions_info_by_topic(msg["args"]["topic"].GetString());
+      for (const auto & sub_info : subscribers) {
+        std::string name = "/" + sub_info.node_name();
+        w.String(name.c_str());
+      }
+    }
+    
+    w.EndArray();
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  if (service == "/rosapi/node_details") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("values");
+    w.StartObject();
+    
+    w.Key("subscribing"); w.StartArray();
+    w.Key("publishing"); w.StartArray();
+    w.Key("services"); w.StartArray();
+    
+    if (msg.HasMember("args") && msg["args"].HasMember("node")) {
+      auto [ns, node_name] = split_ns_node_name(msg["args"]["node"].GetString());
+      
+      // Collect subscribing topics
+      std::vector<std::string> subscribing;
+      std::vector<std::string> publishing;
+      
+      std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+      for (auto& topic : topics) {
+        auto subscribers = node_->get_subscriptions_info_by_topic(topic.first);
+        for (auto& sub : subscribers) {
+          std::string sub_node = sub.node_name();
+          std::string sub_ns = sub.node_namespace() == "/" ? "" : sub.node_namespace();
+          if (sub_ns + sub_node == ns + node_name) {
+            subscribing.push_back(topic.first);
+          }
+        }
+        
+        auto publishers = node_->get_publishers_info_by_topic(topic.first);
+        for (auto& pub : publishers) {
+          std::string pub_node = pub.node_name();
+          std::string pub_ns = pub.node_namespace() == "/" ? "" : pub.node_namespace();
+          if (pub_ns + pub_node == ns + node_name) {
+            publishing.push_back(topic.first);
+          }
+        }
+      }
+      
+      // Reset and write properly
+      buf.Clear();
+      w.Reset(buf);
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("service_response");
+      w.Key("service"); w.String(service.c_str());
+      w.Key("values");
+      w.StartObject();
+      
+      w.Key("subscribing"); w.StartArray();
+      for (auto& s : subscribing) w.String(s.c_str());
+      w.EndArray();
+      
+      w.Key("publishing"); w.StartArray();
+      for (auto& p : publishing) w.String(p.c_str());
+      w.EndArray();
+      
+      w.Key("services"); w.StartArray();
+      try {
+        auto services = node_->get_service_names_and_types_by_node(node_name, ns);
+        for (auto& s : services) w.String(s.first.c_str());
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Exception while fetching services: %s", e.what());
+      }
+      w.EndArray();
+      
+      w.EndObject();  // values
+      w.Key("result"); w.Bool(true);
+      w.EndObject();
+      return true;
+    }
+    
+    w.EndArray();  // services
+    w.EndArray();  // publishing  
+    w.EndArray();  // subscribing
+    w.EndObject();  // values
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  if (service == "/rosapi/topic_type") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    
+    if (!msg.HasMember("args") || !msg["args"].HasMember("topic")) {
+      w.Key("result"); w.Bool(false);
+      w.EndObject();
+      return true;
+    }
+    
+    std::string topic_name = msg["args"]["topic"].GetString();
+    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types(); 
+    if (topics.find(topic_name) == topics.end()) {
+      RCLCPP_ERROR(get_logger(), "Topic not found: %s", topic_name.c_str());
+      w.Key("result"); w.Bool(false);
+      w.EndObject();
+      return true;
+    }
+
+    w.Key("values");
+    w.StartObject();
+    w.Key("type"); w.String(topics[topic_name][0].c_str());
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  if (service == "/rosapi/services_for_type") {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    
+    w.Key("values");
+    w.StartObject();
+    w.Key("services");
+    w.StartArray();
+    
+    if (msg.HasMember("args") && msg["args"].HasMember("type")) {
+      std::string service_type = msg["args"]["type"].GetString();
+      auto service_name_and_types = node_->get_service_names_and_types();
+
+      for (const auto &pair : service_name_and_types) {
+        for (const auto &type : pair.second) {
+          if (type == service_type) {
+            w.String(pair.first.c_str());
+            break;
+          }
+        }
+      }
+    }
+    
+    w.EndArray();
+    w.EndObject();
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+  }
+  
+  // External service call
+  std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
+  auto service_it = services.find(service);
+  if (service_it == services.end()) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("service_response");
+    w.Key("service"); w.String(service.c_str());
+    w.Key("result"); w.Bool(false);
+    w.Key("error"); w.String("Service not found");
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "Service not found: %s", service.c_str());
+    return true;
+  }
+
+  std::string service_type;
+  if (has_string(msg, "type") && strlen(msg["type"].GetString()) > 0) {
+    service_type = msg["type"].GetString();
+  } else {
+    if (service_it->second.empty()) {
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("result"); w.Bool(false);
+      w.Key("error"); w.String("Service has no advertised type");
+      w.EndObject();
+      RCLCPP_ERROR(get_logger(), "Service has no advertised type: %s", service.c_str());
+      return true;
+    }
+    service_type = service_it->second.front();
+  }
+
+  if (clients_.count(service) == 0) {
+    clients_[service] = node_->create_generic_client(
+      service, service_type, rmw_qos_profile_services_default, nullptr);
+  }
+
+  while (!clients_[service]->wait_for_service(1s)) {
+    if (!rclcpp::ok()) {
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("result"); w.Bool(false);
+      w.Key("error"); w.String("Interrupted while waiting for service");
+      w.EndObject();
+      RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
+      return true;
+    }
+    RCLCPP_INFO(get_logger(), "service not available, waiting again...");
+  }
+
+  static const rapidjson::Document empty_doc;
+  const rapidjson::Value& args = msg.HasMember("args") ? msg["args"] : empty_doc;
+  auto serialized_req = json_to_serialized_service_request(service_type, args);
+  
+  // Get id value for callback
+  std::string id_str;
+  int id_int = 0;
+  bool id_is_string = false;
+  if (msg.HasMember("id")) {
+    if (msg["id"].IsString()) {
+      id_str = msg["id"].GetString();
+      id_is_string = true;
+    } else if (msg["id"].IsInt()) {
+      id_int = msg["id"].GetInt();
+    }
+  }
+  
+  using ServiceResponseFuture = rws::GenericClient::SharedFuture;
+  auto response_received_callback = [this, id_str, id_int, id_is_string, service, service_type](ServiceResponseFuture future) {
+    rapidjson::StringBuffer resp_buf;
+    RapidWriter resp_w(resp_buf);
+    
+    resp_w.StartObject();
+    if (id_is_string) {
+      resp_w.Key("id"); resp_w.String(id_str.c_str());
+    } else if (id_int != 0) {
+      resp_w.Key("id"); resp_w.Int(id_int);
+    }
+    resp_w.Key("op"); resp_w.String("service_response");
+    resp_w.Key("service"); resp_w.String(service.c_str());
+    resp_w.Key("values");
+    serialized_service_response_to_json(service_type, future.get(), resp_w);
+    resp_w.Key("result"); resp_w.Bool(true);
+    resp_w.EndObject();
+
+    std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+    this->send_message(json_str);
+  };
+  clients_[service]->async_send_request(serialized_req, response_received_callback);
+
+  w.StartObject();
+  write_id(msg, w);
+  w.Key("op"); w.String("call_service");
+  w.Key("result"); w.Bool(true);
+  w.EndObject();
   return true;
 }
 
-bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & /*w*/)
+GenericActionClient::SharedPtr ClientHandler::get_or_create_action_client(
+  const std::string & action_name, const std::string & action_type)
 {
-  // Actions are rare, fall back to nlohmann
-  rapidjson::StringBuffer full_buf;
-  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
-  msg.Accept(full_w);
-  
-  json nlohmann_msg = json::parse(full_buf.GetString());
-  json nlohmann_response;
-  send_action_goal(nlohmann_msg, nlohmann_response);
-  
-  std::string resp_str = nlohmann_response.dump();
-  buf.Clear();
-  for (size_t i = 0; i < resp_str.size(); i++) {
-    buf.Put(resp_str[i]);
+  if (action_clients_.count(action_name) == 0) {
+    action_clients_[action_name] = node_->create_generic_action_client(action_name, action_type);
   }
-  
-  return true;
+  return action_clients_[action_name];
 }
 
-bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & /*w*/)
+bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
 {
-  // Actions are rare, fall back to nlohmann
-  rapidjson::StringBuffer full_buf;
-  rapidjson::Writer<rapidjson::StringBuffer> full_w(full_buf);
-  msg.Accept(full_w);
+  w.StartObject();
+  write_id(msg, w);
   
-  json nlohmann_msg = json::parse(full_buf.GetString());
-  json nlohmann_response;
-  cancel_action_goal(nlohmann_msg, nlohmann_response);
-  
-  std::string resp_str = nlohmann_response.dump();
-  buf.Clear();
-  for (size_t i = 0; i < resp_str.size(); i++) {
-    buf.Put(resp_str[i]);
+  if (!has_string(msg, "action")) {
+    w.Key("error"); w.String("No action name specified");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No action name specified");
+    return true;
   }
+
+  std::string action_name = msg["action"].GetString();
+
+  if (!has_string(msg, "action_type")) {
+    w.Key("error"); w.String("No action_type specified");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No action_type specified");
+    return true;
+  }
+
+  std::string action_type = msg["action_type"].GetString();
   
-  return true;
+  // Get optional feedback flag
+  bool feedback = get_bool(msg, "feedback", false);
+
+  // Get goal arguments - use static empty doc to avoid copy constructor issues
+  static const rapidjson::Document empty_action_doc;
+  const rapidjson::Value* goal_args_ptr = &empty_action_doc;
+  if (msg.HasMember("args") && msg["args"].IsObject()) {
+    goal_args_ptr = &msg["args"];
+  } else if (msg.HasMember("goal") && msg["goal"].IsObject()) {
+    goal_args_ptr = &msg["goal"];
+  }
+  const rapidjson::Value& goal_args = *goal_args_ptr;
+
+  try {
+    auto action_client = get_or_create_action_client(action_name, action_type);
+
+    // Get id for callbacks
+    std::string id_str;
+    int id_int = 0;
+    bool id_is_string = false;
+    if (msg.HasMember("id")) {
+      if (msg["id"].IsString()) {
+        id_str = msg["id"].GetString();
+        id_is_string = true;
+      } else if (msg["id"].IsInt()) {
+        id_int = msg["id"].GetInt();
+      }
+    }
+
+    // Callbacks for goal response, feedback, and result
+    auto goal_response_callback = [this, id_str, id_int, id_is_string, action_name](
+      bool accepted, const GenericActionClient::GoalUUID & goal_id) {
+      // Format goal_id as string for rosbridge protocol
+      std::string goal_id_str;
+      for (size_t i = 0; i < goal_id.size(); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+        goal_id_str += buf;
+      }
+
+      rapidjson::StringBuffer resp_buf;
+      RapidWriter resp_w(resp_buf);
+      resp_w.StartObject();
+      if (id_is_string) {
+        resp_w.Key("id"); resp_w.String(id_str.c_str());
+      } else if (id_int != 0) {
+        resp_w.Key("id"); resp_w.Int(id_int);
+      }
+      resp_w.Key("op"); resp_w.String("action_result");
+      resp_w.Key("action"); resp_w.String(action_name.c_str());
+      resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
+      resp_w.Key("status"); resp_w.String(accepted ? "accepted" : "rejected");
+      resp_w.Key("result"); resp_w.Bool(accepted);
+      resp_w.EndObject();
+
+      std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+      this->send_message(json_str);
+    };
+
+    GenericActionClient::FeedbackCallback feedback_callback = nullptr;
+    if (feedback) {
+      feedback_callback = [this, id_str, id_int, id_is_string, action_name, action_type](
+        const GenericActionClient::GoalUUID & goal_id,
+        GenericActionClient::SharedResponse feedback_msg) {
+        // Format goal_id as string
+        std::string goal_id_str;
+        for (size_t i = 0; i < goal_id.size(); ++i) {
+          char buf[3];
+          snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+          goal_id_str += buf;
+        }
+
+        rapidjson::StringBuffer resp_buf;
+        RapidWriter resp_w(resp_buf);
+        resp_w.StartObject();
+        if (id_is_string) {
+          resp_w.Key("id"); resp_w.String(id_str.c_str());
+        } else if (id_int != 0) {
+          resp_w.Key("id"); resp_w.Int(id_int);
+        }
+        resp_w.Key("op"); resp_w.String("action_feedback");
+        resp_w.Key("action"); resp_w.String(action_name.c_str());
+        resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
+        resp_w.Key("values");
+        
+        // Deserialize feedback to JSON
+        rapidjson::Document feedback_doc;
+        serialized_message_to_json(action_type + "_Feedback", feedback_msg, feedback_doc);
+        
+        // Write the feedback document
+        feedback_doc.Accept(resp_w);
+        
+        resp_w.EndObject();
+
+        std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+        this->send_message(json_str);
+      };
+    }
+
+    auto result_callback = [this, id_str, id_int, id_is_string, action_name, action_type](
+      const GenericActionClient::GoalUUID & goal_id,
+      int8_t status,
+      GenericActionClient::SharedResponse result_msg) {
+      // Format goal_id as string
+      std::string goal_id_str;
+      for (size_t i = 0; i < goal_id.size(); ++i) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+        goal_id_str += buf;
+      }
+
+      // Map status to string
+      std::string status_str;
+      switch (status) {
+        case 1: status_str = "executing"; break;
+        case 2: status_str = "canceling"; break;
+        case 4: status_str = "succeeded"; break;
+        case 5: status_str = "canceled"; break;
+        case 6: status_str = "aborted"; break;
+        default: status_str = "unknown"; break;
+      }
+
+      rapidjson::StringBuffer resp_buf;
+      RapidWriter resp_w(resp_buf);
+      resp_w.StartObject();
+      if (id_is_string) {
+        resp_w.Key("id"); resp_w.String(id_str.c_str());
+      } else if (id_int != 0) {
+        resp_w.Key("id"); resp_w.Int(id_int);
+      }
+      resp_w.Key("op"); resp_w.String("action_result");
+      resp_w.Key("action"); resp_w.String(action_name.c_str());
+      resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
+      resp_w.Key("status"); resp_w.String(status_str.c_str());
+      resp_w.Key("values");
+      
+      // Deserialize result to JSON
+      rapidjson::Document result_doc;
+      serialized_message_to_json(action_type + "_Result", result_msg, result_doc);
+      result_doc.Accept(resp_w);
+      
+      resp_w.Key("result"); resp_w.Bool(status == 4);  // true if succeeded
+      resp_w.EndObject();
+
+      std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+      this->send_message(json_str);
+    };
+
+    auto goal_id = action_client->async_send_goal(
+      goal_args, goal_response_callback, feedback_callback, result_callback);
+
+    // Format goal_id as string for initial response
+    std::string goal_id_str;
+    for (size_t i = 0; i < goal_id.size(); ++i) {
+      char buf[3];
+      snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
+      goal_id_str += buf;
+    }
+
+    w.Key("op"); w.String("send_action_goal");
+    w.Key("goal_id"); w.String(goal_id_str.c_str());
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+
+  } catch (const std::exception & e) {
+    w.Key("error"); w.String((std::string("Failed to send action goal: ") + e.what()).c_str());
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "Failed to send action goal: %s", e.what());
+    return true;
+  }
+}
+
+bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+{
+  w.StartObject();
+  write_id(msg, w);
+  
+  if (!has_string(msg, "action")) {
+    w.Key("error"); w.String("No action name specified");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No action name specified");
+    return true;
+  }
+
+  std::string action_name = msg["action"].GetString();
+
+  if (action_clients_.count(action_name) == 0) {
+    w.Key("error"); w.String(("No active action client for: " + action_name).c_str());
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No active action client for: %s", action_name.c_str());
+    return true;
+  }
+
+  if (!has_string(msg, "goal_id")) {
+    w.Key("error"); w.String("No goal_id specified");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "No goal_id specified");
+    return true;
+  }
+
+  std::string goal_id_str = msg["goal_id"].GetString();
+  
+  // Parse goal_id from hex string
+  GenericActionClient::GoalUUID goal_id;
+  if (goal_id_str.length() == 32) {  // 16 bytes * 2 hex chars
+    for (size_t i = 0; i < 16; ++i) {
+      goal_id[i] = static_cast<uint8_t>(
+        std::stoul(goal_id_str.substr(i * 2, 2), nullptr, 16));
+    }
+  } else {
+    w.Key("error"); w.String("Invalid goal_id format");
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "Invalid goal_id format");
+    return true;
+  }
+
+  try {
+    // Get id for callback
+    std::string id_str;
+    int id_int = 0;
+    bool id_is_string = false;
+    if (msg.HasMember("id")) {
+      if (msg["id"].IsString()) {
+        id_str = msg["id"].GetString();
+        id_is_string = true;
+      } else if (msg["id"].IsInt()) {
+        id_int = msg["id"].GetInt();
+      }
+    }
+    
+    action_clients_[action_name]->async_cancel_goal(
+      goal_id,
+      [this, id_str, id_int, id_is_string, action_name, goal_id_str](bool success) {
+        rapidjson::StringBuffer resp_buf;
+        RapidWriter resp_w(resp_buf);
+        resp_w.StartObject();
+        if (id_is_string) {
+          resp_w.Key("id"); resp_w.String(id_str.c_str());
+        } else if (id_int != 0) {
+          resp_w.Key("id"); resp_w.Int(id_int);
+        }
+        resp_w.Key("op"); resp_w.String("cancel_action_goal");
+        resp_w.Key("action"); resp_w.String(action_name.c_str());
+        resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
+        resp_w.Key("result"); resp_w.Bool(success);
+        resp_w.EndObject();
+
+        std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+        this->send_message(json_str);
+      });
+
+    w.Key("op"); w.String("cancel_action_goal");
+    w.Key("result"); w.Bool(true);
+    w.EndObject();
+    return true;
+
+  } catch (const std::exception & e) {
+    w.Key("error"); w.String((std::string("Failed to cancel action goal: ") + e.what()).c_str());
+    w.Key("result"); w.Bool(false);
+    w.EndObject();
+    RCLCPP_ERROR(get_logger(), "Failed to cancel action goal: %s", e.what());
+    return true;
+  }
 }
 
 }  // namespace rws

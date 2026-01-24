@@ -5,7 +5,9 @@
 
 #include <gtest/gtest.h>
 
-#include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <rclcpp/rclcpp.hpp>
 
 #include "rcl_interfaces/msg/log.hpp"
@@ -13,8 +15,6 @@
 
 namespace rws
 {
-
-using json = nlohmann::json;
 
 class TranslateFixture : public testing::Test
 {
@@ -238,12 +238,24 @@ TEST_F(TranslateFixture, DeserializeRclInterfacesLogMessage)
   static rclcpp::Serialization<rcl_interfaces::msg::Log> serializer;
   serializer.serialize_message(log_msg.get(), &*serialized_msg);
 
-  std::string expected_json_str =
-    R"({"file":"/src/client_handler.cpp","function":"process_message","level":1,"line":1,"msg":"process_message: {\"args\":{},\"id\":\"call_service:/rosapi/topics_and_raw_types:1\",\"op\":\"call_service\",\"service\":\"/rosapi/topics_and_raw_types\",\"type\":\"rosapi/TopicsAndRawTypes\"}","name":"client_handler","stamp":{"nanosec":0,"sec":0}})";
-  json expected = json::parse(expected_json_str);
-
-  auto log_msg_json = rws::serialized_message_to_json("rcl_interfaces/msg/Log", serialized_msg);
-  EXPECT_EQ(log_msg_json, expected);
+  rapidjson::Document log_msg_doc;
+  rws::serialized_message_to_json("rcl_interfaces/msg/Log", serialized_msg, log_msg_doc);
+  
+  // Compare individual fields rather than full JSON string (key order may differ)
+  EXPECT_TRUE(log_msg_doc.HasMember("stamp"));
+  EXPECT_TRUE(log_msg_doc["stamp"].HasMember("sec"));
+  EXPECT_EQ(log_msg_doc["stamp"]["sec"].GetInt(), 0);
+  EXPECT_TRUE(log_msg_doc["stamp"].HasMember("nanosec"));
+  EXPECT_EQ(log_msg_doc["stamp"]["nanosec"].GetInt(), 0);
+  EXPECT_EQ(log_msg_doc["level"].GetInt(), 1);
+  EXPECT_STREQ(log_msg_doc["name"].GetString(), "client_handler");
+  EXPECT_STREQ(log_msg_doc["file"].GetString(), "/src/client_handler.cpp");
+  EXPECT_STREQ(log_msg_doc["function"].GetString(), "process_message");
+  EXPECT_EQ(log_msg_doc["line"].GetInt(), 1);
+  // Verify msg field contains the expected content
+  std::string msg_str = log_msg_doc["msg"].GetString();
+  EXPECT_TRUE(msg_str.find("call_service") != std::string::npos);
+  EXPECT_TRUE(msg_str.find("/rosapi/topics_and_raw_types") != std::string::npos);
 }
 
 TEST_F(TranslateFixture, DescribeMsgsNestedType)

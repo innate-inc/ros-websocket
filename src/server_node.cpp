@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <cstdio>
-#include <nlohmann/json.hpp>
 #include <websocketpp/config/asio_no_tls.hpp>
 #include <websocketpp/server.hpp>
 
@@ -23,7 +22,6 @@
 #include "rws/connector.hpp"
 #include "rws/node_interface_impl.hpp"
 
-using json = nlohmann::json;
 using websocketpp::connection_hdl;
 using websocketpp::lib::bind;
 using websocketpp::lib::condition_variable;
@@ -277,20 +275,9 @@ private:
 
     auto client_node = cd->node;
     try {
-      // Toggle for benchmarking: true = RapidJSON (fast), false = nlohmann/json (old)
-      constexpr bool use_rapidjson = true;
-      
-      std::string response_str;
-      if constexpr (use_rapidjson) {
-        // RapidJSON fast path
-        const std::string& payload = a.msg->get_payload();
-        response_str = client_node->process_message_rapid(payload.data(), payload.size());
-      } else {
-        // Old nlohmann path
-        auto json_msg = json::parse(a.msg->get_payload());
-        auto response = client_node->process_message(json_msg);
-        response_str = response.dump();
-      }
+      // RapidJSON fast path
+      const std::string& payload = a.msg->get_payload();
+      std::string response_str = client_node->process_message_rapid(payload.data(), payload.size());
 
       {
         std::lock_guard<std::mutex> guard(action_lock_);
