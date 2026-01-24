@@ -190,15 +190,14 @@ std::string ClientHandler::process_message_rapid(const char* data, size_t length
   return std::string(buffer.GetString(), buffer.GetSize());
 }
 
-bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("subscribe_response");
-  
   if (!has_string(msg, "topic")) {
-    w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String("No topic specified");
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No topic specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No topic specified");
     return true;
@@ -208,8 +207,11 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
   std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
   
   if (topics.find(topic) == topics.end()) {
-    w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String(("Topic " + topic + " not found").c_str());
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String(("Topic " + topic + " not found").c_str());
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "Topic %s not found", topic.c_str());
     return true;
@@ -235,49 +237,44 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
     topic_params params(topic, sub_type, history_depth, compression, throttle_rate);
     subscriptions_[topic] = connector_->subscribe_to_topic(
       client_id_, params, std::bind(&ClientHandler::subscription_callback, this, std::placeholders::_1, std::placeholders::_2));
-    
-    w.Key("type"); w.String(sub_type.c_str());
-    w.Key("result"); w.Bool(true);
-  } else {
-    w.Key("result"); w.Bool(true);  // Already subscribed
   }
   
-  w.EndObject();
+  // Success - no response per rosbridge spec (messages will arrive via publish op)
+  buf.Clear();
   return true;
 }
 
-bool ClientHandler::unsubscribe_from_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::unsubscribe_from_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("unsubscribe_response");
-  
-  if (has_string(msg, "topic")) {
-    std::string topic = msg["topic"].GetString();
-    if (subscriptions_.count(topic) > 0) {
-      subscriptions_[topic]();
-      subscriptions_.erase(topic);
-      w.Key("result"); w.Bool(true);
-    } else {
-      w.Key("result"); w.Bool(false);
-    }
-  } else {
-    w.Key("result"); w.Bool(false);
-  }
-  
-  w.EndObject();
-  return true;
-}
-
-bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
-{
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("advertise_response");
-  
   if (!has_string(msg, "topic")) {
-    w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String("No topic specified");
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No topic specified");
+    w.EndObject();
+    return true;
+  }
+  
+  std::string topic = msg["topic"].GetString();
+  if (subscriptions_.count(topic) > 0) {
+    subscriptions_[topic]();
+    subscriptions_.erase(topic);
+  }
+  
+  // Success - no response per rosbridge spec
+  buf.Clear();
+  return true;
+}
+
+bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
+{
+  if (!has_string(msg, "topic")) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No topic specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No topic specified");
     return true;
@@ -293,8 +290,11 @@ bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapid
     if (topics.find(topic) != topics.end() && !topics[topic].empty()) {
       type = topics[topic][0];
     } else {
-      w.Key("result"); w.Bool(false);
-      w.Key("error"); w.String("No type specified and topic not found for type lookup");
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("status");
+      w.Key("level"); w.String("error");
+      w.Key("msg"); w.String("No type specified and topic not found for type lookup");
       w.EndObject();
       RCLCPP_ERROR(get_logger(), "No type specified and topic not found for type lookup");
       return true;
@@ -314,49 +314,55 @@ bool ClientHandler::advertise_topic_rapid(const rapidjson::Document & msg, rapid
   if (publishers_.count(topic) == 0) {
     publishers_[topic] = connector_->advertise_topic(client_id_, params, publisher_cb_[topic]);
     publisher_type_[topic] = type;
-    w.Key("result"); w.Bool(true);
-  } else {
-    w.Key("result"); w.Bool(true);
   }
   
-  w.EndObject();
+  // Success - no response per rosbridge spec
+  buf.Clear();
   return true;
 }
 
-bool ClientHandler::unadvertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::unadvertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("unadvertise_response");
-  
-  if (has_string(msg, "topic")) {
-    std::string topic = msg["topic"].GetString();
-    if (publishers_.count(topic) > 0) {
-      publishers_[topic]();
-      publishers_.erase(topic);
-      publisher_cb_.erase(topic);
-      publisher_type_.erase(topic);
-      w.Key("result"); w.Bool(true);
-    } else {
-      w.Key("result"); w.Bool(false);
-    }
-  } else {
-    w.Key("result"); w.Bool(false);
+  if (!has_string(msg, "topic")) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("warning");
+    w.Key("msg"); w.String("No topic specified");
+    w.EndObject();
+    return true;
   }
   
-  w.EndObject();
+  std::string topic = msg["topic"].GetString();
+  if (publishers_.count(topic) > 0) {
+    publishers_[topic]();
+    publishers_.erase(topic);
+    publisher_cb_.erase(topic);
+    publisher_type_.erase(topic);
+  } else {
+    // Per spec: warning if topic doesn't exist or not advertising
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("warning");
+    w.Key("msg"); w.String(("Not advertising topic: " + topic).c_str());
+    w.EndObject();
+    return true;
+  }
+  
+  // Success - no response per rosbridge spec
+  buf.Clear();
   return true;
 }
 
 bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("publish_response");
-  
   if (!has_string(msg, "topic")) {
-    w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String("No topic specified");
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No topic specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No topic specified");
     return true;
@@ -370,30 +376,32 @@ bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapi
     rapidjson::StringBuffer adv_buf;
     RapidWriter adv_w(adv_buf);
     if (!advertise_topic_rapid(msg, adv_buf, adv_w)) {
-      w.Key("result"); w.Bool(false);
-      w.Key("error"); w.String("Failed to auto-advertise topic");
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("status");
+      w.Key("level"); w.String("error");
+      w.Key("msg"); w.String("Failed to auto-advertise topic");
       w.EndObject();
       return true;
     }
     // Check if we actually advertised (publisher should exist now)
     if (publishers_.count(topic) == 0) {
-      w.Key("result"); w.Bool(false);
-      w.Key("error"); w.String("Failed to auto-advertise topic");
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("status");
+      w.Key("level"); w.String("error");
+      w.Key("msg"); w.String("Failed to auto-advertise topic");
       w.EndObject();
       return true;
     }
-    
-    // Reset the buffer and writer since advertise wrote to it
-    buf.Clear();
-    w.Reset(buf);
-    w.StartObject();
-    write_id(msg, w);
-    w.Key("op"); w.String("publish_response");
   }
   
   if (!msg.HasMember("msg") || !msg["msg"].IsObject()) {
-    w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String("No msg specified");
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No msg specified");
     w.EndObject();
     return true;
   }
@@ -402,8 +410,8 @@ bool ClientHandler::publish_to_topic_rapid(const rapidjson::Document & msg, rapi
   auto serialized_msg = rws::json_to_serialized_message(type, msg["msg"]);
   publisher_cb_[topic](serialized_msg);
   
-  w.Key("result"); w.Bool(true);
-  w.EndObject();
+  // Success - no response per rosbridge spec
+  buf.Clear();
   return true;
 }
 
@@ -412,8 +420,9 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
   if (!has_string(msg, "service")) {
     w.StartObject();
     write_id(msg, w);
-    w.Key("error"); w.String("No service specified");
-    w.Key("result"); w.Bool(false);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No service specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No service specified");
     return true;
@@ -712,7 +721,6 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     w.Key("op"); w.String("service_response");
     w.Key("service"); w.String(service.c_str());
     w.Key("result"); w.Bool(false);
-    w.Key("error"); w.String("Service not found");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "Service not found: %s", service.c_str());
     return true;
@@ -725,8 +733,9 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     if (service_it->second.empty()) {
       w.StartObject();
       write_id(msg, w);
+      w.Key("op"); w.String("service_response");
+      w.Key("service"); w.String(service.c_str());
       w.Key("result"); w.Bool(false);
-      w.Key("error"); w.String("Service has no advertised type");
       w.EndObject();
       RCLCPP_ERROR(get_logger(), "Service has no advertised type: %s", service.c_str());
       return true;
@@ -743,8 +752,9 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     if (!rclcpp::ok()) {
       w.StartObject();
       write_id(msg, w);
+      w.Key("op"); w.String("service_response");
+      w.Key("service"); w.String(service.c_str());
       w.Key("result"); w.Bool(false);
-      w.Key("error"); w.String("Interrupted while waiting for service");
       w.EndObject();
       RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
       return true;
@@ -792,11 +802,8 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
   };
   clients_[service]->async_send_request(serialized_req, response_received_callback);
 
-  w.StartObject();
-  write_id(msg, w);
-  w.Key("op"); w.String("call_service");
-  w.Key("result"); w.Bool(true);
-  w.EndObject();
+  // No immediate response per rosbridge spec - service_response comes asynchronously
+  buf.Clear();
   return true;
 }
 
@@ -809,14 +816,14 @@ GenericActionClient::SharedPtr ClientHandler::get_or_create_action_client(
   return action_clients_[action_name];
 }
 
-bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  
   if (!has_string(msg, "action")) {
-    w.Key("error"); w.String("No action name specified");
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No action name specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No action name specified");
     return true;
@@ -825,8 +832,11 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
   std::string action_name = msg["action"].GetString();
 
   if (!has_string(msg, "action_type")) {
-    w.Key("error"); w.String("No action_type specified");
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No action_type specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No action_type specified");
     return true;
@@ -985,37 +995,31 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
     auto goal_id = action_client->async_send_goal(
       goal_args, goal_response_callback, feedback_callback, result_callback);
 
-    // Format goal_id as string for initial response
-    std::string goal_id_str;
-    for (size_t i = 0; i < goal_id.size(); ++i) {
-      char buf[3];
-      snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
-      goal_id_str += buf;
-    }
-
-    w.Key("op"); w.String("send_action_goal");
-    w.Key("goal_id"); w.String(goal_id_str.c_str());
-    w.Key("result"); w.Bool(true);
-    w.EndObject();
+    // No immediate response per rosbridge spec - action_result comes asynchronously
+    (void)goal_id;  // Goal ID is returned via action_result callback
+    buf.Clear();
     return true;
 
   } catch (const std::exception & e) {
-    w.Key("error"); w.String((std::string("Failed to send action goal: ") + e.what()).c_str());
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String((std::string("Failed to send action goal: ") + e.what()).c_str());
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "Failed to send action goal: %s", e.what());
     return true;
   }
 }
 
-bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & /*buf*/, RapidWriter & w)
+bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
 {
-  w.StartObject();
-  write_id(msg, w);
-  
   if (!has_string(msg, "action")) {
-    w.Key("error"); w.String("No action name specified");
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No action name specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No action name specified");
     return true;
@@ -1024,16 +1028,22 @@ bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, ra
   std::string action_name = msg["action"].GetString();
 
   if (action_clients_.count(action_name) == 0) {
-    w.Key("error"); w.String(("No active action client for: " + action_name).c_str());
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String(("No active action client for: " + action_name).c_str());
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No active action client for: %s", action_name.c_str());
     return true;
   }
 
   if (!has_string(msg, "goal_id")) {
-    w.Key("error"); w.String("No goal_id specified");
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No goal_id specified");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "No goal_id specified");
     return true;
@@ -1049,8 +1059,11 @@ bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, ra
         std::stoul(goal_id_str.substr(i * 2, 2), nullptr, 16));
     }
   } else {
-    w.Key("error"); w.String("Invalid goal_id format");
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("Invalid goal_id format");
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "Invalid goal_id format");
     return true;
@@ -1073,32 +1086,38 @@ bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, ra
     action_clients_[action_name]->async_cancel_goal(
       goal_id,
       [this, id_str, id_int, id_is_string, action_name, goal_id_str](bool success) {
-        rapidjson::StringBuffer resp_buf;
-        RapidWriter resp_w(resp_buf);
-        resp_w.StartObject();
-        if (id_is_string) {
-          resp_w.Key("id"); resp_w.String(id_str.c_str());
-        } else if (id_int != 0) {
-          resp_w.Key("id"); resp_w.Int(id_int);
-        }
-        resp_w.Key("op"); resp_w.String("cancel_action_goal");
-        resp_w.Key("action"); resp_w.String(action_name.c_str());
-        resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
-        resp_w.Key("result"); resp_w.Bool(success);
-        resp_w.EndObject();
+        // Per spec, cancellation confirmation comes via action_result with canceled status
+        // But we send a status message if cancel request failed
+        if (!success) {
+          rapidjson::StringBuffer resp_buf;
+          RapidWriter resp_w(resp_buf);
+          resp_w.StartObject();
+          if (id_is_string) {
+            resp_w.Key("id"); resp_w.String(id_str.c_str());
+          } else if (id_int != 0) {
+            resp_w.Key("id"); resp_w.Int(id_int);
+          }
+          resp_w.Key("op"); resp_w.String("status");
+          resp_w.Key("level"); resp_w.String("warning");
+          resp_w.Key("msg"); resp_w.String("Failed to cancel action goal");
+          resp_w.EndObject();
 
-        std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
-        this->send_message(json_str);
+          std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+          this->send_message(json_str);
+        }
+        // Success: action_result with "canceled" status will be sent by result_callback
       });
 
-    w.Key("op"); w.String("cancel_action_goal");
-    w.Key("result"); w.Bool(true);
-    w.EndObject();
+    // No immediate response per rosbridge spec
+    buf.Clear();
     return true;
 
   } catch (const std::exception & e) {
-    w.Key("error"); w.String((std::string("Failed to cancel action goal: ") + e.what()).c_str());
-    w.Key("result"); w.Bool(false);
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String((std::string("Failed to cancel action goal: ") + e.what()).c_str());
     w.EndObject();
     RCLCPP_ERROR(get_logger(), "Failed to cancel action goal: %s", e.what());
     return true;
