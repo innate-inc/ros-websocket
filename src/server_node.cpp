@@ -283,11 +283,14 @@ private:
       const std::string& payload = a.msg->get_payload();
       std::string response_str = client_node->process_message_rapid(payload.data(), payload.size());
 
-      {
-        std::lock_guard<std::mutex> guard(action_lock_);
-        actions_.push(action(TEXT_REPLY, a.hdl, response_str));
+      // Only send if there's actually a response (some ops like subscribe don't respond per rosbridge spec)
+      if (!response_str.empty()) {
+        {
+          std::lock_guard<std::mutex> guard(action_lock_);
+          actions_.push(action(TEXT_REPLY, a.hdl, response_str));
+        }
+        action_cond_.notify_one();
       }
-      action_cond_.notify_one();
     } catch (const std::exception & e) {
       RCLCPP_WARN(get_logger(), "Failed to process message: %s", e.what());
     }
