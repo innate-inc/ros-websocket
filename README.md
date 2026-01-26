@@ -47,26 +47,28 @@ rws_server_node = Node(
 | publish | + | + | Publish to topic |
 | subscribe | + | + | Subscribe to topic |
 | unsubscribe | + | + | Unsubscribe from topic |
-| call_service | + | + | Call service |
-| advertise_service | - | + |Advertise external service |
+| call_service | + | + | Call service (with timeout support) |
+| advertise_service | - | + | Advertise external service |
 | unadvertise_service | - | + | Stop advertising external service |
 | service_request | - | + | Request to external service |
 | service_response | - | + | Response from external service |
-| send_action_goal | + | + | Send action goal |
+| send_action_goal | + | + | Send action goal (with feedback) |
 | cancel_action_goal | + | + | Cancel action goal |
+| advertise_action | - | + | Advertise action server |
+| unadvertise_action | - | + | Stop advertising action server |
 
 ### Fragmentation
 **Message fragmentation is not supported in RWS**
 
 ### Compression
-| Algorithm | RWS | Rosbridge |
-| --- | --- | --- |
-| CBOR-RAW | + | + |
-| CBOR | + | + |
-| BSON | + | + |
-| MessagePack | + | - |
-| UBJSON | + | - |
-| BJData | + | - |
+| Format | RWS | Rosbridge | Notes |
+| --- | --- | --- | --- |
+| JSON | + | + | Default format |
+| CBOR-RAW | - | + | Not supported |
+| CBOR | - | + | Not supported |
+| PNG | - | + | Not supported |
+
+**Note:** RWS only supports JSON encoding. Binary formats (CBOR, CBOR-RAW, PNG compression) are not supported.
 
 ### Rosapi service calls
 Unlike Rosbridge, RWS does not expose `/rosapi` node, all `rosapi` related API requests are handled internally in `rws_server` node.
