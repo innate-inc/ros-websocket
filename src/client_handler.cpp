@@ -215,17 +215,26 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
   }
   
   std::string topic = msg["topic"].GetString();
-  std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
   
-  if (topics.find(topic) == topics.end()) {
-    w.StartObject();
-    write_id(msg, w);
-    w.Key("op"); w.String("status");
-    w.Key("level"); w.String("error");
-    w.Key("msg"); w.String(("Topic " + topic + " not found").c_str());
-    w.EndObject();
-    RCLCPP_ERROR(get_logger(), "Topic %s not found", topic.c_str());
-    return true;
+  // Determine the topic type - either from message or by discovery
+  std::string sub_type;
+  if (has_string(msg, "type") && strlen(msg["type"].GetString()) > 0) {
+    // Type is provided, use it directly
+    sub_type = msg["type"].GetString();
+  } else {
+    // No type provided, need to discover it
+    std::map<std::string, std::vector<std::string>> topics = node_->get_topic_names_and_types();
+    if (topics.find(topic) == topics.end()) {
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("status");
+      w.Key("level"); w.String("error");
+      w.Key("msg"); w.String(("Topic " + topic + " not found and no type specified").c_str());
+      w.EndObject();
+      RCLCPP_ERROR(get_logger(), "Topic %s not found and no type specified", topic.c_str());
+      return true;
+    }
+    sub_type = topics[topic][0];
   }
   
   size_t history_depth = 10;
@@ -243,7 +252,6 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
   
   std::string compression = has_string(msg, "compression") ? msg["compression"].GetString() : "none";
   
-  auto sub_type = topics[topic][0];
   if (subscriptions_.count(topic) == 0) {
     topic_params params(topic, sub_type, history_depth, compression, throttle_rate);
     subscriptions_[topic] = connector_->subscribe_to_topic(
