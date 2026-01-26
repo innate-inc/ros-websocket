@@ -212,9 +212,12 @@ GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
               // result_member->members_ is a rosidl_message_type_support_t*, cast its data
               const auto * result_field_members = static_cast<const MessageMembers *>(result_member->members_->data);
               std::string result_type = rws::get_type_from_message_members(result_field_members);
-              auto result_ts_lib = rclcpp::get_typesupport_library(result_type, rws::ts_identifier);
+              
+              // Use rosidl_typesupport_cpp for serialization (not introspection)
+              const char * serialize_ts_id = "rosidl_typesupport_cpp";
+              auto result_ts_lib = rclcpp::get_typesupport_library(result_type, serialize_ts_id);
               auto result_ts_hdl = rclcpp::get_typesupport_handle(
-                result_type, rws::ts_identifier, *result_ts_lib);
+                result_type, serialize_ts_id, *result_ts_lib);
 
               auto ser_result = std::make_shared<rclcpp::SerializedMessage>();
               rmw_ret_t r = rmw_serialize(
@@ -316,15 +319,20 @@ void GenericActionClient::handle_feedback_message(std::shared_ptr<void> message)
       // feedback_member->members_ is a rosidl_message_type_support_t*, cast its data
       const auto * feedback_field_members = static_cast<const MessageMembers *>(feedback_member->members_->data);
       std::string feedback_type = rws::get_type_from_message_members(feedback_field_members);
-      auto feedback_ts_lib = rclcpp::get_typesupport_library(feedback_type, rws::ts_identifier);
+      
+      // Use rosidl_typesupport_cpp for serialization (not introspection)
+      const char * serialize_ts_id = "rosidl_typesupport_cpp";
+      auto feedback_ts_lib = rclcpp::get_typesupport_library(feedback_type, serialize_ts_id);
       auto feedback_ts_hdl = rclcpp::get_typesupport_handle(
-        feedback_type, rws::ts_identifier, *feedback_ts_lib);
+        feedback_type, serialize_ts_id, *feedback_ts_lib);
 
       auto ser_feedback = std::make_shared<rclcpp::SerializedMessage>();
       rmw_ret_t r = rmw_serialize(
         feedback_field, feedback_ts_hdl, &ser_feedback->get_rcl_serialized_message());
       if (r == RMW_RET_OK) {
         callback(goal_id, ser_feedback);
+      } else {
+        RCLCPP_ERROR(rclcpp::get_logger("generic_action_client"), "Failed to serialize feedback");
       }
     }
   }

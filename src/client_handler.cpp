@@ -874,33 +874,20 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
     }
 
     // Callbacks for goal response, feedback, and result
-    auto goal_response_callback = [this, id_str, id_int, id_is_string, action_name](
+    // Note: Per rosbridge protocol, we do NOT send an immediate action_result when the goal is accepted.
+    // The action_result is only sent when the action completes (succeeds, fails, or is canceled).
+    // We only log the acceptance status here for debugging purposes.
+    auto goal_response_callback = [this, action_name](
       bool accepted, const GenericActionClient::GoalUUID & goal_id) {
-      // Format goal_id as string for rosbridge protocol
+      // Format goal_id as string for logging
       std::string goal_id_str;
       for (size_t i = 0; i < goal_id.size(); ++i) {
         char buf[3];
         snprintf(buf, sizeof(buf), "%02x", goal_id[i]);
         goal_id_str += buf;
       }
-
-      rapidjson::StringBuffer resp_buf;
-      RapidWriter resp_w(resp_buf);
-      resp_w.StartObject();
-      if (id_is_string) {
-        resp_w.Key("id"); resp_w.String(id_str.c_str());
-      } else if (id_int != 0) {
-        resp_w.Key("id"); resp_w.Int(id_int);
-      }
-      resp_w.Key("op"); resp_w.String("action_result");
-      resp_w.Key("action"); resp_w.String(action_name.c_str());
-      resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
-      resp_w.Key("status"); resp_w.String(accepted ? "accepted" : "rejected");
-      resp_w.Key("result"); resp_w.Bool(accepted);
-      resp_w.EndObject();
-
-      std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
-      this->send_message(json_str);
+      RCLCPP_DEBUG(get_logger(), "Action goal %s %s for %s", 
+        goal_id_str.c_str(), accepted ? "accepted" : "rejected", action_name.c_str());
     };
 
     GenericActionClient::FeedbackCallback feedback_callback = nullptr;
@@ -930,8 +917,16 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
         resp_w.Key("values");
         
         // Deserialize feedback to JSON
+        // action_type is like "example_interfaces/Fibonacci"
+        // We need "example_interfaces/action/Fibonacci_Feedback"
+        auto sep_pos = action_type.find_last_of('/');
+        auto pkg_sep = action_type.find_first_of('/');
+        std::string package_name = action_type.substr(0, pkg_sep);
+        std::string action_name_only = action_type.substr(sep_pos + 1);
+        std::string feedback_type = package_name + "/action/" + action_name_only + "_Feedback";
+        
         rapidjson::Document feedback_doc;
-        serialized_message_to_json(action_type + "_Feedback", feedback_msg, feedback_doc);
+        serialized_message_to_json(feedback_type, feedback_msg, feedback_doc);
         
         // Write the feedback document
         feedback_doc.Accept(resp_w);
@@ -955,17 +950,6 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
         goal_id_str += buf;
       }
 
-      // Map status to string
-      std::string status_str;
-      switch (status) {
-        case 1: status_str = "executing"; break;
-        case 2: status_str = "canceling"; break;
-        case 4: status_str = "succeeded"; break;
-        case 5: status_str = "canceled"; break;
-        case 6: status_str = "aborted"; break;
-        default: status_str = "unknown"; break;
-      }
-
       rapidjson::StringBuffer resp_buf;
       RapidWriter resp_w(resp_buf);
       resp_w.StartObject();
@@ -977,12 +961,20 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
       resp_w.Key("op"); resp_w.String("action_result");
       resp_w.Key("action"); resp_w.String(action_name.c_str());
       resp_w.Key("goal_id"); resp_w.String(goal_id_str.c_str());
-      resp_w.Key("status"); resp_w.String(status_str.c_str());
+      resp_w.Key("status"); resp_w.Int(status);  // Send as integer per rosbridge protocol
       resp_w.Key("values");
       
       // Deserialize result to JSON
+      // action_type is like "example_interfaces/Fibonacci"
+      // We need "example_interfaces/action/Fibonacci_Result"
+      auto sep_pos = action_type.find_last_of('/');
+      auto pkg_sep = action_type.find_first_of('/');
+      std::string package_name = action_type.substr(0, pkg_sep);
+      std::string action_name_only = action_type.substr(sep_pos + 1);
+      std::string result_type = package_name + "/action/" + action_name_only + "_Result";
+      
       rapidjson::Document result_doc;
-      serialized_message_to_json(action_type + "_Result", result_msg, result_doc);
+      serialized_message_to_json(result_type, result_msg, result_doc);
       result_doc.Accept(resp_w);
       
       resp_w.Key("result"); resp_w.Bool(status == 4);  // true if succeeded
