@@ -14,8 +14,10 @@
 
 #include "rws/client_handler.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -112,6 +114,15 @@ static inline bool has_string(const rapidjson::Value& v, const char* key) {
 
 static inline bool get_bool(const rapidjson::Value& v, const char* key, bool def = false) {
   if (v.HasMember(key) && v[key].IsBool()) return v[key].GetBool();
+  return def;
+}
+
+static inline double get_double(const rapidjson::Value& v, const char* key, double def = 0.0) {
+  if (v.HasMember(key)) {
+    if (v[key].IsDouble()) return v[key].GetDouble();
+    if (v[key].IsInt()) return static_cast<double>(v[key].GetInt());
+    if (v[key].IsFloat()) return static_cast<double>(v[key].GetFloat());
+  }
   return def;
 }
 
@@ -713,23 +724,24 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
   }
   
   // External service call
-  std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
-  auto service_it = services.find(service);
-  if (service_it == services.end()) {
-    w.StartObject();
-    write_id(msg, w);
-    w.Key("op"); w.String("service_response");
-    w.Key("service"); w.String(service.c_str());
-    w.Key("result"); w.Bool(false);
-    w.EndObject();
-    RCLCPP_ERROR(get_logger(), "Service not found: %s", service.c_str());
-    return true;
-  }
-
   std::string service_type;
   if (has_string(msg, "type") && strlen(msg["type"].GetString()) > 0) {
+    // Type is provided, use it directly
     service_type = msg["type"].GetString();
   } else {
+    // No type provided, need to discover it
+    std::map<std::string, std::vector<std::string>> services = node_->get_service_names_and_types();
+    auto service_it = services.find(service);
+    if (service_it == services.end()) {
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("service_response");
+      w.Key("service"); w.String(service.c_str());
+      w.Key("result"); w.Bool(false);
+      w.EndObject();
+      RCLCPP_ERROR(get_logger(), "Service not found: %s", service.c_str());
+      return true;
+    }
     if (service_it->second.empty()) {
       w.StartObject();
       write_id(msg, w);
@@ -779,8 +791,21 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     }
   }
   
+  // Get timeout value (in seconds, 0 or negative means no timeout)
+  double timeout_sec = get_double(msg, "timeout", 0.0);
+  
+  // Use shared atomic to track if response has been sent (for timeout handling)
+  auto response_sent = std::make_shared<std::atomic<bool>>(false);
+  
   using ServiceResponseFuture = rws::GenericClient::SharedFuture;
-  auto response_received_callback = [this, id_str, id_int, id_is_string, service, service_type](ServiceResponseFuture future) {
+  auto response_received_callback = [this, id_str, id_int, id_is_string, service, service_type, response_sent](ServiceResponseFuture future) {
+    // Check if timeout already sent a response
+    bool expected = false;
+    if (!response_sent->compare_exchange_strong(expected, true)) {
+      // Timeout already sent a response, don't send another
+      return;
+    }
+    
     rapidjson::StringBuffer resp_buf;
     RapidWriter resp_w(resp_buf);
     
@@ -801,6 +826,38 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
     this->send_message(json_str);
   };
   clients_[service]->async_send_request(serialized_req, response_received_callback);
+
+  // Set up timeout if requested
+  if (timeout_sec > 0.0) {
+    std::thread([this, id_str, id_int, id_is_string, service, response_sent, timeout_sec]() {
+      std::this_thread::sleep_for(std::chrono::duration<double>(timeout_sec));
+      
+      // Check if real response already sent
+      bool expected = false;
+      if (!response_sent->compare_exchange_strong(expected, true)) {
+        // Response already sent, don't send timeout
+        return;
+      }
+      
+      rapidjson::StringBuffer resp_buf;
+      RapidWriter resp_w(resp_buf);
+      
+      resp_w.StartObject();
+      if (id_is_string) {
+        resp_w.Key("id"); resp_w.String(id_str.c_str());
+      } else if (id_int != 0) {
+        resp_w.Key("id"); resp_w.Int(id_int);
+      }
+      resp_w.Key("op"); resp_w.String("service_response");
+      resp_w.Key("service"); resp_w.String(service.c_str());
+      resp_w.Key("values"); resp_w.String("Timeout exceeded while waiting for service response");
+      resp_w.Key("result"); resp_w.Bool(false);
+      resp_w.EndObject();
+
+      std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+      this->send_message(json_str);
+    }).detach();
+  }
 
   // No immediate response per rosbridge spec - service_response comes asynchronously
   buf.Clear();
