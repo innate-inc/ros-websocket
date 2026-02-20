@@ -1,4 +1,7 @@
 # ROS WebSocket Server
+
+**This fork of RWS supports ROS2 Humble and Zenoh RWS, is more performant because of JSON libraries, supports sending actions, but does not support various encodings. We use this internally at Innate and it works great.**
+
 RWS provides WebSocket interface to ROS2. It is partially* compatible with Rosbridge v2 protocol and can be used as a drop-in replacement. The main difference with Rosbridge is that RWS is written is C++, hence it's more fast and memory efficient, however ROS1 is not supported.
 
 _* Not all Rosbridge operations supported, check compatability section below for more information_.
