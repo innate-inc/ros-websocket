@@ -66,6 +66,9 @@ ClientHandler::~ClientHandler()
   for (auto it = publishers_.begin(); it != publishers_.end(); ++it) {
     it->second();
   }
+  for (auto it = advertised_services_.begin(); it != advertised_services_.end(); ++it) {
+    it->second();
+  }
    RCLCPP_INFO(
     get_logger(), "Done Destroying client %s(%s)", std::to_string(client_id_).c_str(),
     string_thread_id().c_str()); 
@@ -136,6 +139,16 @@ static void write_id(const rapidjson::Document& msg, RapidWriter& w) {
   }
 }
 
+static std::string value_to_id_string(const rapidjson::Value& value)
+{
+  if (value.IsString()) return value.GetString();
+  if (value.IsInt()) return std::to_string(value.GetInt());
+  if (value.IsUint()) return std::to_string(value.GetUint());
+  if (value.IsInt64()) return std::to_string(value.GetInt64());
+  if (value.IsUint64()) return std::to_string(value.GetUint64());
+  return "";
+}
+
 // ============================================================================
 // RapidJSON message processing
 // ============================================================================
@@ -181,6 +194,12 @@ std::string ClientHandler::process_message_rapid(const char* data, size_t length
     handled = publish_to_topic_rapid(doc, buffer, writer);
   } else if (strcmp(op, "call_service") == 0) {
     handled = call_service_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "advertise_service") == 0) {
+    handled = advertise_service_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "unadvertise_service") == 0) {
+    handled = unadvertise_service_rapid(doc, buffer, writer);
+  } else if (strcmp(op, "service_response") == 0) {
+    handled = service_response_rapid(doc, buffer, writer);
   } else if (strcmp(op, "send_action_goal") == 0) {
     handled = send_action_goal_rapid(doc, buffer, writer);
   } else if (strcmp(op, "cancel_action_goal") == 0) {
@@ -868,6 +887,209 @@ bool ClientHandler::call_service_rapid(const rapidjson::Document & msg, rapidjso
   }
 
   // No immediate response per rosbridge spec - service_response comes asynchronously
+  buf.Clear();
+  return true;
+}
+
+bool ClientHandler::advertise_service_rapid(
+  const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
+{
+  if (!has_string(msg, "service")) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No service specified");
+    w.EndObject();
+    return true;
+  }
+  if (!has_string(msg, "type") || strlen(msg["type"].GetString()) == 0) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No service type specified");
+    w.EndObject();
+    return true;
+  }
+
+  const std::string service = msg["service"].GetString();
+  const std::string service_type = rws::service_type_to_ros2_style(msg["type"].GetString());
+
+  if (advertised_services_.count(service) > 0) {
+    buf.Clear();
+    return true;
+  }
+
+  auto request_callback =
+    [this, service, service_type](
+      std::shared_ptr<rmw_request_id_t> request_header,
+      rws::GenericService::SharedRequest request)
+    {
+      const uint64_t seq = advertised_service_sequence_.fetch_add(1);
+      const std::string request_id =
+        "advertise_service:" + service + ":" + std::to_string(seq);
+
+      {
+        std::lock_guard<std::mutex> lock(advertised_service_mutex_);
+        pending_advertised_service_requests_[request_id] =
+          PendingAdvertisedServiceRequest{service, service_type, request_header};
+      }
+
+      try {
+        rapidjson::StringBuffer resp_buf;
+        RapidWriter resp_w(resp_buf);
+        resp_w.StartObject();
+        resp_w.Key("op"); resp_w.String("call_service");
+        resp_w.Key("service"); resp_w.String(service.c_str());
+        resp_w.Key("id"); resp_w.String(request_id.c_str());
+        resp_w.Key("args");
+        serialized_service_request_to_json(service_type, request, resp_w);
+        resp_w.EndObject();
+
+        std::string json_str(resp_buf.GetString(), resp_buf.GetSize());
+        this->send_message(json_str);
+      } catch (const std::exception & e) {
+        std::lock_guard<std::mutex> lock(advertised_service_mutex_);
+        pending_advertised_service_requests_.erase(request_id);
+        RCLCPP_ERROR(
+          get_logger(), "Failed to forward advertised service request for %s: %s",
+          service.c_str(), e.what());
+      }
+    };
+
+  try {
+    auto service_server = node_->create_generic_service(
+      service, service_type, rmw_qos_profile_services_default, nullptr, request_callback);
+    service_servers_[service] = service_server;
+    advertised_service_type_[service] = service_type;
+    advertised_services_[service] =
+      [this, service]()
+      {
+        {
+          std::lock_guard<std::mutex> lock(advertised_service_mutex_);
+          for (auto it = pending_advertised_service_requests_.begin();
+            it != pending_advertised_service_requests_.end(); )
+          {
+            if (it->second.service == service) {
+              it = pending_advertised_service_requests_.erase(it);
+            } else {
+              ++it;
+            }
+          }
+        }
+        service_servers_.erase(service);
+        advertised_service_type_.erase(service);
+      };
+  } catch (const std::exception & e) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String(e.what());
+    w.EndObject();
+    RCLCPP_ERROR(
+      get_logger(), "Failed to advertise service %s of type %s: %s",
+      service.c_str(), service_type.c_str(), e.what());
+    return true;
+  }
+
+  buf.Clear();
+  return true;
+}
+
+bool ClientHandler::unadvertise_service_rapid(
+  const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
+{
+  if (!has_string(msg, "service")) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("warning");
+    w.Key("msg"); w.String("No service specified");
+    w.EndObject();
+    return true;
+  }
+
+  std::string service = msg["service"].GetString();
+  if (advertised_services_.count(service) > 0) {
+    advertised_services_[service]();
+    advertised_services_.erase(service);
+  } else {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("warning");
+    w.Key("msg"); w.String(("Not advertising service: " + service).c_str());
+    w.EndObject();
+    return true;
+  }
+
+  buf.Clear();
+  return true;
+}
+
+bool ClientHandler::service_response_rapid(
+  const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w)
+{
+  if (!msg.HasMember("id")) {
+    w.StartObject();
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("No id specified for service_response");
+    w.EndObject();
+    return true;
+  }
+
+  const std::string id = value_to_id_string(msg["id"]);
+  PendingAdvertisedServiceRequest pending;
+  {
+    std::lock_guard<std::mutex> lock(advertised_service_mutex_);
+    auto pending_it = pending_advertised_service_requests_.find(id);
+    if (pending_it == pending_advertised_service_requests_.end()) {
+      w.StartObject();
+      write_id(msg, w);
+      w.Key("op"); w.String("status");
+      w.Key("level"); w.String("warning");
+      w.Key("msg"); w.String("No pending advertised service request for id");
+      w.EndObject();
+      return true;
+    }
+    pending = pending_it->second;
+    pending_advertised_service_requests_.erase(pending_it);
+  }
+
+  auto service_it = service_servers_.find(pending.service);
+  if (service_it == service_servers_.end()) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String("Advertised service is no longer available");
+    w.EndObject();
+    return true;
+  }
+
+  static const rapidjson::Document empty_doc;
+  const rapidjson::Value& values = msg.HasMember("values") && msg["values"].IsObject()
+    ? msg["values"] : empty_doc;
+
+  try {
+    auto response = json_to_serialized_service_response(pending.service_type, values);
+    service_it->second->send_serialized_response(pending.request_header, response);
+  } catch (const std::exception & e) {
+    w.StartObject();
+    write_id(msg, w);
+    w.Key("op"); w.String("status");
+    w.Key("level"); w.String("error");
+    w.Key("msg"); w.String(e.what());
+    w.EndObject();
+    RCLCPP_ERROR(
+      get_logger(), "Failed to handle advertised service response for %s: %s",
+      pending.service.c_str(), e.what());
+    return true;
+  }
+
   buf.Clear();
   return true;
 }

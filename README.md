@@ -51,10 +51,10 @@ rws_server_node = Node(
 | subscribe | + | + | Subscribe to topic |
 | unsubscribe | + | + | Unsubscribe from topic |
 | call_service | + | + | Call service (with timeout support) |
-| advertise_service | - | + | Advertise external service |
-| unadvertise_service | - | + | Stop advertising external service |
+| advertise_service | + | + | Advertise external service |
+| unadvertise_service | + | + | Stop advertising external service |
 | service_request | - | + | Request to external service |
-| service_response | - | + | Response from external service |
+| service_response | + | + | Response from external service |
 | send_action_goal | + | + | Send action goal (with feedback) |
 | cancel_action_goal | + | + | Cancel action goal |
 | advertise_action | - | + | Advertise action server |

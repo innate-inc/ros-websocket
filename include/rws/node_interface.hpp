@@ -4,6 +4,7 @@
 #include "rclcpp/generic_publisher.hpp"
 #include "rclcpp/generic_subscription.hpp"
 #include "rws/generic_client.hpp"
+#include "rws/generic_service.hpp"
 #include "rws/generic_action_client.hpp"
 
 namespace rws
@@ -55,6 +56,12 @@ public:
   virtual GenericClient::SharedPtr create_generic_client(
     const std::string & service_name, const std::string & service_type,
     const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group) = 0;
+
+  /// Create a generic service server with a given type.
+  virtual GenericService::SharedPtr create_generic_service(
+    const std::string & service_name, const std::string & service_type,
+    const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group,
+    GenericService::CallbackType callback) = 0;
 
   /// Create a generic action client with a given type.
   virtual GenericActionClient::SharedPtr create_generic_action_client(

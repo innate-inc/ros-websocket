@@ -58,6 +58,22 @@ SharedMessage json_to_serialized_message(const std::string & msg_type, const rap
  */
 SharedMessage json_to_serialized_service_request(const std::string & srv_type, const rapidjson::Value & value);
 
+/// Translate RapidJSON Value to serialized service response
+/**
+ * \param[in] srv_type Service type, e.g. "std_srvs/srv/SetBool"
+ * \param[in] value RapidJSON Value representation of service response
+ * \return Serialized service response
+ */
+SharedMessage json_to_serialized_service_response(const std::string & srv_type, const rapidjson::Value & value);
+
+/// Translate serialized service request to RapidJSON and write directly
+/**
+ * \param[in] srv_type Service type, e.g. "std_srvs/srv/SetBool"
+ * \param[in] msg Serialized service request
+ * \param[out] writer RapidJSON writer to output to
+ */
+void serialized_service_request_to_json(const std::string & srv_type, ConstSharedMessage msg, RapidWriter & writer);
+
 /// Translate serialized service response to RapidJSON and write directly
 /**
  * \param[in] srv_type Service type, e.g. "std_srvs/srv/SetBool"
@@ -97,6 +113,13 @@ std::string generate_message_meta(const std::string & msg_type, bool rosbridge_c
  * \return Message type in ROS2 style (e.g. "std_msgs/msg/String")
  */
 std::string message_type_to_ros2_style(const std::string & type);
+
+/// Convert ROS1-style service type to ROS2 style
+/**
+ * \param[in] type Service type in ROS1 style (e.g. "std_srvs/Trigger")
+ * \return Service type in ROS2 style (e.g. "std_srvs/srv/Trigger")
+ */
+std::string service_type_to_ros2_style(const std::string & type);
 
 }  // namespace rws
 
