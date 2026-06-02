@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Script to send a NavigateToPose action goal via rosbridge and cancel it after 2 seconds.
-"""
+"""Send a NavigateToPose action goal via rosbridge and cancel it."""
 
 import json
 import time
@@ -155,7 +153,7 @@ def on_open(ws):
 
 
 def main():
-    """Main entry point."""
+    """Run the NavigateToPose cancel helper."""
     url = f"ws://{ROSBRIDGE_HOST}:{ROSBRIDGE_PORT}"
     print(f"[Connecting] {url}")
     

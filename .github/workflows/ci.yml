@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  ros-humble:
+    name: ROS Humble build and tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ros_ws/src/rws
+
+      - name: Set up ROS
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      - name: Install dependencies
+        working-directory: ros_ws
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-colcon-common-extensions python3-rosdep
+          sudo rosdep init || true
+          rosdep update --rosdistro humble
+          rosdep install --from-paths src --ignore-src --rosdistro humble -r -y
+
+      - name: Build
+        working-directory: ros_ws
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build \
+            --packages-select rws \
+            --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Test
+        working-directory: ros_ws
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test \
+            --packages-select rws \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure
+          colcon test-result --verbose
