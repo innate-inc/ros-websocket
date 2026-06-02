@@ -30,6 +30,13 @@ public:
     ());
 
   MOCK_METHOD(
+    rws::GenericService::SharedPtr, create_generic_service,
+    (const std::string & service_name, const std::string & service_type,
+     const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group,
+     rws::GenericService::CallbackType callback),
+    ());
+
+  MOCK_METHOD(
     rws::GenericActionClient::SharedPtr, create_generic_action_client,
     (const std::string & action_name, const std::string & action_type,
      const rcl_action_client_options_t & options),

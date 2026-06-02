@@ -53,11 +53,11 @@ fetchcontent_getproperties(websocketpp)
 if(NOT websocketpp_POPULATED)
   fetchcontent_populate(websocketpp)
   add_subdirectory(${websocketpp_SOURCE_DIR} ${websocketpp_BINARY_DIR} EXCLUDE_FROM_ALL)
-  
+
   # Patch hybi13.hpp to skip outgoing UTF-8 validation for TEXT frames
   # This improves performance when we know our JSON output is valid UTF-8
   file(READ "${websocketpp_SOURCE_DIR}/websocketpp/processors/hybi13.hpp" HYBI13_CONTENT)
-  string(REPLACE 
+  string(REPLACE
     "// validate payload utf8\n        if (op == frame::opcode::TEXT && !utf8_validator::validate(i)) {\n            return make_error_code(error::invalid_payload);\n        }"
     "// UTF-8 validation disabled for outgoing TEXT frames (we generate valid UTF-8)\n        // if (op == frame::opcode::TEXT && !utf8_validator::validate(i)) {\n        //     return make_error_code(error::invalid_payload);\n        // }"
     HYBI13_CONTENT "${HYBI13_CONTENT}")
@@ -105,6 +105,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gmock REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   find_package(rcl_interfaces REQUIRED)
+  find_package(std_msgs REQUIRED)
+  find_package(std_srvs REQUIRED)
 
   # the following lines skip linters
   set(ament_cmake_cppcheck_FOUND TRUE)
@@ -164,6 +166,8 @@ if(BUILD_TESTING)
     src/generic_action_client.cpp
   )
   ament_target_dependencies(client_handler_test ${DEPENDENCIES})
+  ament_target_dependencies(client_handler_test std_msgs)
+  ament_target_dependencies(client_handler_test std_srvs)
   target_include_directories(client_handler_test PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>

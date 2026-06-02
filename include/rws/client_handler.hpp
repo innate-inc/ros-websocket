@@ -15,6 +15,9 @@
 #ifndef RWS__NODE_HPP_
 #define RWS__NODE_HPP_
 
+#include <atomic>
+#include <mutex>
+
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -58,7 +61,19 @@ private:
   std::map<std::string, std::function<void(std::shared_ptr<const rclcpp::SerializedMessage>)>>
     publisher_cb_;
   std::map<std::string, std::shared_ptr<rws::GenericClient>> clients_;
+  std::map<std::string, std::function<void()>> advertised_services_;
+  std::map<std::string, std::shared_ptr<rws::GenericService>> service_servers_;
+  std::map<std::string, std::string> advertised_service_type_;
   std::map<std::string, std::shared_ptr<rws::GenericActionClient>> action_clients_;
+  struct PendingAdvertisedServiceRequest
+  {
+    std::string service;
+    std::string service_type;
+    std::shared_ptr<rmw_request_id_t> request_header;
+  };
+  std::mutex advertised_service_mutex_;
+  std::map<std::string, PendingAdvertisedServiceRequest> pending_advertised_service_requests_;
+  std::atomic<uint64_t> advertised_service_sequence_{0};
 
   rclcpp::Logger get_logger()
   {
@@ -77,6 +92,9 @@ private:
   bool unadvertise_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool publish_to_topic_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool call_service_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
+  bool advertise_service_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
+  bool unadvertise_service_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
+  bool service_response_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool send_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   bool cancel_action_goal_rapid(const rapidjson::Document & msg, rapidjson::StringBuffer & buf, RapidWriter & w);
   

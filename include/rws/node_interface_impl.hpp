@@ -6,6 +6,7 @@
 #include "rws/node_interface.hpp"
 #include "rws/typesupport_helpers.hpp"
 #include "rws/generic_action_client.hpp"
+#include "rws/generic_service.hpp"
 
 namespace rws
 {
@@ -50,6 +51,22 @@ public:
     auto cli_base_ptr = std::dynamic_pointer_cast<rclcpp::ClientBase>(cli);
     node_->get_node_services_interface()->add_client(cli_base_ptr, group);
     return cli;
+  }
+
+  GenericService::SharedPtr create_generic_service(
+    const std::string & service_name, const std::string & service_type,
+    const rmw_qos_profile_t & qos_profile, rclcpp::CallbackGroup::SharedPtr group,
+    GenericService::CallbackType callback)
+  {
+    rcl_service_options_t options = rcl_service_get_default_options();
+    options.qos = qos_profile;
+
+    auto srv = GenericService::make_shared(
+      node_->get_node_base_interface(), service_name, service_type, options, callback);
+
+    auto srv_base_ptr = std::dynamic_pointer_cast<rclcpp::ServiceBase>(srv);
+    node_->get_node_services_interface()->add_service(srv_base_ptr, group);
+    return srv;
   }
 
   GenericActionClient::SharedPtr create_generic_action_client(

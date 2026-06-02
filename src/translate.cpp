@@ -107,6 +107,9 @@ static void serialized_message_to_json_rapid(cycdeser & deser, const MessageMemb
   writer.StartObject();
   for (uint32_t i = 0; i < members->member_count_; ++i) {
     const auto * member = members->members_ + i;
+    if (strcmp(member->name_, "structure_needs_at_least_one_member") == 0) {
+      continue;
+    }
     writer.Key(member->name_);
 
     switch (member->type_id_) {
@@ -495,6 +498,40 @@ SharedMessage json_to_serialized_service_request(const std::string & srv_type, c
   return msg;
 }
 
+SharedMessage json_to_serialized_service_response(const std::string & srv_type, const rapidjson::Value & value)
+{
+  auto library = rws::get_typesupport_library(srv_type, rws::ts_identifier);
+  auto ts = rws::get_service_typesupport_handle(srv_type, rws::ts_identifier, *library);
+  auto srv_members = static_cast<const ServiceMembers *>(ts->data);
+  auto response_members = srv_members->response_members_;
+
+  auto msg = std::make_shared<rclcpp::SerializedMessage>(0);
+  auto rcl_msg = &msg->get_rcl_serialized_message();
+  std::vector<unsigned char> buffer;
+  cycser ser(buffer);
+
+  json_to_serialized_message_rapid(ser, response_members, value);
+
+  msg->reserve(buffer.size());
+  memcpy(rcl_msg->buffer, buffer.data(), buffer.size());
+  rcl_msg->buffer_length = buffer.size();
+
+  return msg;
+}
+
+void serialized_service_request_to_json(const std::string & srv_type, ConstSharedMessage msg, RapidWriter & writer)
+{
+  auto library = rws::get_typesupport_library(srv_type, rws::ts_identifier);
+  auto ts = rws::get_service_typesupport_handle(srv_type, rws::ts_identifier, *library);
+  auto srv_members = static_cast<const ServiceMembers *>(ts->data);
+  auto request_members = srv_members->request_members_;
+
+  auto rcl_msg = &msg->get_rcl_serialized_message();
+
+  cycdeser deser(rcl_msg->buffer, rcl_msg->buffer_length);
+  serialized_message_to_json_rapid(deser, request_members, writer);
+}
+
 void serialized_service_response_to_json(const std::string & srv_type, ConstSharedMessage msg, RapidWriter & writer)
 {
   auto library = rws::get_typesupport_library(srv_type, rws::ts_identifier);
@@ -771,6 +808,16 @@ static void populate_message_from_json_rapid(
 void json_to_ros_message(const rapidjson::Value & value, const MessageMembers * members, void * message)
 {
   populate_message_from_json_rapid(value, members, message);
+}
+
+std::string service_type_to_ros2_style(const std::string & ros1_srv_type)
+{
+  std::string s = ros1_srv_type;
+  if (s.find("/srv/") != std::string::npos) {
+    return ros1_srv_type;
+  }
+  s.replace(s.find("/"), sizeof("/") - 1, "/srv/");
+  return s;
 }
 
 // ============================================================================
