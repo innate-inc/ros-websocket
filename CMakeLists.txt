@@ -105,6 +105,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gmock REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   find_package(rcl_interfaces REQUIRED)
+  find_package(std_msgs REQUIRED)
   find_package(std_srvs REQUIRED)
 
   # the following lines skip linters
@@ -165,6 +166,7 @@ if(BUILD_TESTING)
     src/generic_action_client.cpp
   )
   ament_target_dependencies(client_handler_test ${DEPENDENCIES})
+  ament_target_dependencies(client_handler_test std_msgs)
   ament_target_dependencies(client_handler_test std_srvs)
   target_include_directories(client_handler_test PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
