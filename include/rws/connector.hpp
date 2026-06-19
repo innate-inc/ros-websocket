@@ -12,27 +12,28 @@ namespace rws
 
 struct topic_params
 {
-  topic_params() : history_depth(10), compression("none"), topic(""), type(""), latch(false), throttle_rate(0, 0) {}
+  topic_params() : history_depth(10), compression("none"), topic(""), type(""), latch(false), throttle_rate(0, 0), durability(rclcpp::DurabilityPolicy::SystemDefault) {}
   topic_params(std::string t, std::string tp)
-  : history_depth(10), compression("none"), topic(t), type(tp), latch(false), throttle_rate(0, 0)
+  : history_depth(10), compression("none"), topic(t), type(tp), latch(false), throttle_rate(0, 0), durability(rclcpp::DurabilityPolicy::SystemDefault)
   {
   }
-  topic_params(std::string t, std::string tp, size_t qs, std::string c, rclcpp::Duration tr)
-  : history_depth(qs), compression(c), topic(t), type(tp), latch(false), throttle_rate(tr)
+  topic_params(std::string t, std::string tp, size_t qs, std::string c, rclcpp::Duration tr, rclcpp::DurabilityPolicy d = rclcpp::DurabilityPolicy::SystemDefault)
+  : history_depth(qs), compression(c), topic(t), type(tp), latch(false), throttle_rate(tr), durability(d)
   {
   }
   topic_params(std::string t, std::string tp, size_t qs, bool l)
-  : history_depth(qs), compression("none"), topic(t), type(tp), latch(l), throttle_rate(0, 0)
+  : history_depth(qs), compression("none"), topic(t), type(tp), latch(l), throttle_rate(0, 0), durability(rclcpp::DurabilityPolicy::SystemDefault)
   {
   }
   bool operator==(const topic_params & p)
   {
-    return  topic == p.topic && 
-            type == p.type && 
-            history_depth == p.history_depth && 
+    return  topic == p.topic &&
+            type == p.type &&
+            history_depth == p.history_depth &&
             throttle_rate == p.throttle_rate &&
             compression == p.compression &&
-            latch == p.latch;
+            latch == p.latch &&
+            durability == p.durability;
   }
   size_t history_depth;
   std::string compression;  // rws internal
@@ -40,6 +41,9 @@ struct topic_params
   std::string type;
   bool latch;  // only for publishers, rws internal
   rclcpp::Duration throttle_rate;
+  // Subscriber durability explicitly requested by the client. SystemDefault means
+  // "not requested" -> fall back to auto-matching the publisher's durability.
+  rclcpp::DurabilityPolicy durability;
 };
 
 typedef std::function<void(topic_params & params, std::shared_ptr<const rclcpp::SerializedMessage> message)>
@@ -60,10 +64,22 @@ public:
     auto matching_subscriber = get_subscriber_by_params(params);
     subscriber_handle handle = {nullptr, params, handler, client_id, next_handler_id_++, rclcpp::Time(0, 0, RCL_ROS_TIME), std::make_shared<std::mutex>()};
     rclcpp::QoS qos(params.history_depth);
-    auto info = node_->get_publishers_info_by_topic(params.topic);
-    for(const auto& node : info)
-    {
-      qos.durability(node.qos_profile().get_rmw_qos_profile().durability);
+    if (params.durability != rclcpp::DurabilityPolicy::SystemDefault) {
+      // Client explicitly requested a durability. Apply it directly so the
+      // subscription's QoS does not depend on whether the publisher has been
+      // discovered yet. This eliminates the latched-topic discovery race: a
+      // transient_local subscriber is QoS-compatible with a transient_local
+      // publisher and receives the retained sample whenever they match,
+      // regardless of which side started first.
+      qos.durability(params.durability);
+    } else {
+      // No explicit request: auto-match the durability of any already-discovered
+      // publisher. Subject to a discovery race for latched topics.
+      auto info = node_->get_publishers_info_by_topic(params.topic);
+      for(const auto& node : info)
+      {
+        qos.durability(node.qos_profile().get_rmw_qos_profile().durability);
+      }
     }
     bool is_transient_local = qos.durability() == rclcpp::DurabilityPolicy::TransientLocal;
 

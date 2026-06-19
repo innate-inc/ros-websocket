@@ -60,6 +60,25 @@ rws_server_node = Node(
 | advertise_action | - | + | Advertise action server |
 | unadvertise_action | - | + | Stop advertising action server |
 
+### Subscriber durability (latched topics)
+A `subscribe` message may include an optional `durability` field to explicitly set
+the subscriber's QoS durability:
+
+| Value | Meaning |
+| --- | --- |
+| `"transient_local"` | Request latched delivery. The subscriber receives the publisher's retained sample even if it subscribes before the publisher is discovered. |
+| `"volatile"` | Force volatile delivery (no retained samples). |
+| *(omitted)* | Auto-match the durability of an already-discovered publisher (default, legacy behavior). |
+
+```json
+{ "op": "subscribe", "topic": "/latched_topic", "type": "std_msgs/msg/String", "durability": "transient_local" }
+```
+
+Use `"transient_local"` for genuinely latched topics. Without it, a subscriber that
+connects before the publisher is discovered is created volatile and silently misses
+the retained sample (a discovery race). A `"transient_local"` request will not
+connect to a `volatile` publisher, so only set it on topics that are actually latched.
+
 ### Fragmentation
 **Message fragmentation is not supported in RWS**
 
