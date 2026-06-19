@@ -188,7 +188,7 @@ TEST_F(ClientHandlerFixture, transient_local_subscriber_receives_latched_message
     "op": "subscribe",
     "topic": "/test_latched_topic",
     "type": "std_msgs/msg/String",
-    "durability": "transient_local"
+    "qos": { "durability": "transient_local" }
   })";
   auto subscribe_response = handler->process_message_rapid(subscribe_json, strlen(subscribe_json));
   EXPECT_TRUE(subscribe_response.empty());
@@ -256,7 +256,7 @@ TEST_F(ClientHandlerFixture, volatile_subscriber_does_not_receive_latched_messag
     "op": "subscribe",
     "topic": "/test_volatile_latched_topic",
     "type": "std_msgs/msg/String",
-    "durability": "volatile"
+    "qos": { "durability": "volatile" }
   })";
   auto subscribe_response = handler->process_message_rapid(subscribe_json, strlen(subscribe_json));
   EXPECT_TRUE(subscribe_response.empty());

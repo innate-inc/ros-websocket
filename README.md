@@ -61,8 +61,8 @@ rws_server_node = Node(
 | unadvertise_action | - | + | Stop advertising action server |
 
 ### Subscriber durability (latched topics)
-A `subscribe` message may include an optional `durability` field to explicitly set
-the subscriber's QoS durability:
+A `subscribe` message may include an optional `qos` object with a `durability`
+field to explicitly set the subscriber's QoS durability:
 
 | Value | Meaning |
 | --- | --- |
@@ -71,8 +71,10 @@ the subscriber's QoS durability:
 | *(omitted)* | Auto-match the durability of an already-discovered publisher (default, legacy behavior). |
 
 ```json
-{ "op": "subscribe", "topic": "/latched_topic", "type": "std_msgs/msg/String", "durability": "transient_local" }
+{ "op": "subscribe", "topic": "/latched_topic", "type": "std_msgs/msg/String", "qos": { "durability": "transient_local" } }
 ```
+
+Only `qos.durability` is currently honored; other QoS fields are ignored.
 
 Use `"transient_local"` for genuinely latched topics. Without it, a subscriber that
 connects before the publisher is discovered is created volatile and silently misses

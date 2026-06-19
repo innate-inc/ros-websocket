@@ -6,12 +6,12 @@
 # the public WebSocket protocol plus a normal ROS 2 (rclpy) publisher.
 #
 # What it checks (the latched-topic behavior):
-#   1. transient_local: a subscriber that asks for {"durability": "transient_local"}
-#      receives a message that a latched publisher published BEFORE the subscriber
-#      connected. This is the fix.
-#   2. volatile: a subscriber that asks for {"durability": "volatile"} matches the
-#      same publisher but does NOT receive that already-published sample. This is
-#      why the option matters.
+#   1. transient_local: a subscriber that asks for {"qos": {"durability":
+#      "transient_local"}} receives a message that a latched publisher published
+#      BEFORE the subscriber connected. This is the fix.
+#   2. volatile: a subscriber that asks for {"qos": {"durability": "volatile"}}
+#      matches the same publisher but does NOT receive that already-published
+#      sample. This is why the option matters.
 #
 # Dependencies:
 #   * rclpy + std_msgs  -- from a sourced ROS 2 install (ros-humble-std-msgs)
@@ -82,7 +82,12 @@ def receive_with_durability(durability, wait_seconds):
     ws = create_connection(WS_URL, timeout=5)
     ws.send(
         json.dumps(
-            {"op": "subscribe", "topic": TOPIC, "type": TYPE, "durability": durability}
+            {
+                "op": "subscribe",
+                "topic": TOPIC,
+                "type": TYPE,
+                "qos": {"durability": durability},
+            }
         )
     )
     deadline = time.time() + wait_seconds
