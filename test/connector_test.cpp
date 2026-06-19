@@ -13,6 +13,20 @@ using testing::Return;
 
 using ConstSharedMessage = std::shared_ptr<const rclcpp::SerializedMessage>;
 
+// Build a TopicEndpointInfo describing a publisher with the given durability,
+// as would be returned by get_publishers_info_by_topic once discovery completes.
+static rclcpp::TopicEndpointInfo make_publisher_info(rmw_qos_durability_policy_t durability)
+{
+  rcl_topic_endpoint_info_t info{};
+  info.node_name = "publisher_node";
+  info.node_namespace = "/";
+  info.topic_type = "std_msgs/msg/String";
+  info.endpoint_type = RMW_ENDPOINT_PUBLISHER;
+  info.qos_profile = rmw_qos_profile_default;
+  info.qos_profile.durability = durability;
+  return rclcpp::TopicEndpointInfo(info);
+}
+
 class ConnectorFixture : public testing::Test
 {
 public:
@@ -355,6 +369,134 @@ TEST_F(ConnectorFixture, subscription_callback_throttles_messages)
   EXPECT_EQ(client_msgs.size(), 2);
   EXPECT_EQ(client_msgs[0], messages[0]);
   EXPECT_EQ(client_msgs[1], messages[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Latched-topic discovery race tests.
+//
+// A transient_local ("latched") publisher retains its last sample for late
+// subscribers. A subscriber only receives that retained sample if it is itself
+// transient_local. Historically rws derived the subscriber durability from
+// get_publishers_info_by_topic at subscribe time, so a subscriber that
+// connected before the publisher was discovered would be created Volatile and
+// silently miss the latched sample. Letting the client request durability
+// explicitly removes that dependency on discovery timing.
+// ---------------------------------------------------------------------------
+
+// Reproduces the race: without an explicit durability request, a subscriber
+// that connects before the publisher is discovered is created Volatile and
+// would miss the latched sample.
+TEST_F(ConnectorFixture, subscribe_without_durability_is_volatile_when_publisher_not_yet_discovered)
+{
+  auto node = std::make_shared<testing::NiceMock<NodeMock>>();
+  Connector<GenericPublisherMock> connector(node);
+
+  // Publisher not discovered yet -> empty info (the racy window).
+  EXPECT_CALL(*node, get_publishers_info_by_topic("/latched", _))
+    .WillRepeatedly(Return(std::vector<rclcpp::TopicEndpointInfo>{}));
+
+  topic_params params("/latched", "std_msgs/msg/String");
+  ASSERT_EQ(params.durability, rclcpp::DurabilityPolicy::SystemDefault);
+
+  // Created Volatile (plain QoS(10)), not transient_local -> would miss latch.
+  EXPECT_CALL(*node, create_generic_subscription("/latched", "std_msgs/msg/String", rclcpp::QoS(10), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+
+  connector.subscribe_to_topic(0, params, [](topic_params, ConstSharedMessage) {});
+}
+
+// The fix: an explicit transient_local request makes the subscriber
+// transient_local regardless of whether the publisher has been discovered, and
+// without consulting discovery at all.
+TEST_F(ConnectorFixture, subscribe_with_transient_local_is_transient_local_even_when_publisher_not_yet_discovered)
+{
+  auto node = std::make_shared<testing::NiceMock<NodeMock>>();
+  Connector<GenericPublisherMock> connector(node);
+
+  // Discovery must not be relied upon at all when durability is explicit.
+  EXPECT_CALL(*node, get_publishers_info_by_topic(_, _)).Times(0);
+
+  topic_params params(
+    "/latched", "std_msgs/msg/String", 10, "none", rclcpp::Duration(0, 0),
+    rclcpp::DurabilityPolicy::TransientLocal);
+
+  EXPECT_CALL(
+    *node,
+    create_generic_subscription("/latched", "std_msgs/msg/String", rclcpp::QoS(10).transient_local(), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+
+  connector.subscribe_to_topic(0, params, [](topic_params, ConstSharedMessage) {});
+}
+
+// Legacy auto-match still works when no explicit durability is requested and
+// the publisher has already been discovered as transient_local.
+TEST_F(ConnectorFixture, subscribe_without_durability_auto_matches_discovered_transient_local_publisher)
+{
+  auto node = std::make_shared<testing::NiceMock<NodeMock>>();
+  Connector<GenericPublisherMock> connector(node);
+
+  EXPECT_CALL(*node, get_publishers_info_by_topic("/latched", _))
+    .WillRepeatedly(Return(std::vector<rclcpp::TopicEndpointInfo>{
+      make_publisher_info(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL)}));
+
+  topic_params params("/latched", "std_msgs/msg/String");
+
+  EXPECT_CALL(
+    *node,
+    create_generic_subscription("/latched", "std_msgs/msg/String", rclcpp::QoS(10).transient_local(), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+
+  connector.subscribe_to_topic(0, params, [](topic_params, ConstSharedMessage) {});
+}
+
+// An explicit volatile request overrides auto-matching: even with a discovered
+// transient_local publisher the subscriber stays Volatile (explicit > magic).
+TEST_F(ConnectorFixture, subscribe_with_explicit_volatile_overrides_transient_local_publisher)
+{
+  auto node = std::make_shared<testing::NiceMock<NodeMock>>();
+  Connector<GenericPublisherMock> connector(node);
+
+  // Discovery is not consulted when durability is explicit.
+  EXPECT_CALL(*node, get_publishers_info_by_topic(_, _)).Times(0);
+
+  topic_params params(
+    "/latched", "std_msgs/msg/String", 10, "none", rclcpp::Duration(0, 0),
+    rclcpp::DurabilityPolicy::Volatile);
+
+  EXPECT_CALL(*node, create_generic_subscription("/latched", "std_msgs/msg/String", rclcpp::QoS(10), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+
+  connector.subscribe_to_topic(0, params, [](topic_params, ConstSharedMessage) {});
+}
+
+// Subscribers that differ only in requested durability are distinct, so each
+// gets its own subscription with the correct QoS rather than being collapsed.
+TEST_F(ConnectorFixture, params_with_different_durability_are_not_equal)
+{
+  topic_params volatile_params(
+    "/latched", "std_msgs/msg/String", 10, "none", rclcpp::Duration(0, 0),
+    rclcpp::DurabilityPolicy::Volatile);
+  topic_params transient_params(
+    "/latched", "std_msgs/msg/String", 10, "none", rclcpp::Duration(0, 0),
+    rclcpp::DurabilityPolicy::TransientLocal);
+
+  EXPECT_FALSE(volatile_params == transient_params);
+
+  auto node = std::make_shared<testing::NiceMock<NodeMock>>();
+  Connector<GenericPublisherMock> connector(node);
+  EXPECT_CALL(*node, create_generic_subscription(_, _, rclcpp::QoS(10), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+  EXPECT_CALL(*node, create_generic_subscription(_, _, rclcpp::QoS(10).transient_local(), _, _))
+    .Times(1)
+    .WillOnce(Return(nullptr));
+
+  connector.subscribe_to_topic(0, volatile_params, [](topic_params, ConstSharedMessage) {});
+  connector.subscribe_to_topic(0, transient_params, [](topic_params, ConstSharedMessage) {});
 }
 
 }  // namespace rws

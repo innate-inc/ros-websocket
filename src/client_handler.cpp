@@ -270,9 +270,30 @@ bool ClientHandler::subscribe_to_topic_rapid(const rapidjson::Document & msg, ra
   }
   
   std::string compression = has_string(msg, "compression") ? msg["compression"].GetString() : "none";
-  
+
+  // Optional explicit subscriber durability, read from the QoS profile object
+  // ({"qos": {"durability": "..."}}) per the rosbridge QoS spec. When omitted we
+  // leave it as SystemDefault and the connector auto-matches the publisher's
+  // durability. Requesting "transient_local" for a latched topic avoids the
+  // discovery race where a volatile subscriber misses the publisher's retained
+  // sample. Only the durability field is honored here; other QoS fields are not
+  // yet supported.
+  rclcpp::DurabilityPolicy durability = rclcpp::DurabilityPolicy::SystemDefault;
+  if (msg.HasMember("qos") && msg["qos"].IsObject() && has_string(msg["qos"], "durability")) {
+    std::string durability_str = msg["qos"]["durability"].GetString();
+    if (durability_str == "transient_local") {
+      durability = rclcpp::DurabilityPolicy::TransientLocal;
+    } else if (durability_str == "volatile") {
+      durability = rclcpp::DurabilityPolicy::Volatile;
+    } else {
+      RCLCPP_WARN(
+        get_logger(), "Unknown qos.durability '%s' for topic %s, using system default",
+        durability_str.c_str(), topic.c_str());
+    }
+  }
+
   if (subscriptions_.count(topic) == 0) {
-    topic_params params(topic, sub_type, history_depth, compression, throttle_rate);
+    topic_params params(topic, sub_type, history_depth, compression, throttle_rate, durability);
     subscriptions_[topic] = connector_->subscribe_to_topic(
       client_id_, params, std::bind(&ClientHandler::subscription_callback, this, std::placeholders::_1, std::placeholders::_2));
   }

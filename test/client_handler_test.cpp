@@ -143,6 +143,136 @@ TEST_F(ClientHandlerFixture, ros_topic_publish_reaches_websocket_subscriber_quic
   EXPECT_STREQ(outbound_doc["msg"]["data"].GetString(), "hello from ros");
 }
 
+// End-to-end latched-topic test (the fix): a transient_local publisher
+// publishes a retained sample *before* any subscriber exists. A subscriber that
+// requests durability "transient_local" must still receive that retained
+// sample, even though it joined late.
+TEST_F(ClientHandlerFixture, transient_local_subscriber_receives_latched_message_published_before_subscribe)
+{
+  auto server_node = std::make_shared<rclcpp::Node>("rws_latched_server_test");
+  auto publisher_node = std::make_shared<rclcpp::Node>("rws_latched_publisher_test");
+  auto node_interface = std::make_shared<rws::NodeInterfaceImpl>(server_node);
+  auto connector = std::make_shared<rws::Connector<>>(node_interface);
+
+  std::mutex messages_mutex;
+  std::condition_variable messages_cv;
+  std::vector<std::string> outbound_messages;
+  auto websocket_callback = [&](std::string & msg) {
+    {
+      std::lock_guard<std::mutex> lock(messages_mutex);
+      outbound_messages.push_back(msg);
+    }
+    messages_cv.notify_all();
+  };
+
+  auto handler = std::make_shared<rws::ClientHandler>(
+    1, node_interface, connector, true, websocket_callback,
+    [](std::vector<std::uint8_t> &) {});
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(server_node);
+  executor.add_node(publisher_node);
+  ExecutorSpinGuard spin_guard(executor);
+
+  // Latched publisher with a retained sample, published before any subscriber.
+  rclcpp::QoS latched_qos(1);
+  latched_qos.transient_local();
+  auto publisher =
+    publisher_node->create_publisher<std_msgs::msg::String>("/test_latched_topic", latched_qos);
+  std_msgs::msg::String latched_message;
+  latched_message.data = "latched hello";
+  publisher->publish(latched_message);
+
+  // Subscribe late, explicitly requesting transient_local durability.
+  const char * subscribe_json = R"({
+    "op": "subscribe",
+    "topic": "/test_latched_topic",
+    "type": "std_msgs/msg/String",
+    "qos": { "durability": "transient_local" }
+  })";
+  auto subscribe_response = handler->process_message_rapid(subscribe_json, strlen(subscribe_json));
+  EXPECT_TRUE(subscribe_response.empty());
+
+  // The retained sample must be delivered to the late subscriber.
+  std::string outbound_message;
+  {
+    std::unique_lock<std::mutex> lock(messages_mutex);
+    ASSERT_TRUE(messages_cv.wait_for(
+      lock, 4s, [&outbound_messages]() { return !outbound_messages.empty(); }));
+    outbound_message = outbound_messages.back();
+  }
+
+  rapidjson::Document outbound_doc;
+  outbound_doc.Parse(outbound_message.c_str());
+  ASSERT_FALSE(outbound_doc.HasParseError());
+  EXPECT_STREQ(outbound_doc["op"].GetString(), "publish");
+  EXPECT_STREQ(outbound_doc["topic"].GetString(), "/test_latched_topic");
+  ASSERT_TRUE(outbound_doc["msg"].HasMember("data"));
+  EXPECT_STREQ(outbound_doc["msg"]["data"].GetString(), "latched hello");
+}
+
+// End-to-end contrast (why the param matters): the same scenario but the
+// subscriber requests durability "volatile". DDS guarantees a volatile
+// subscriber never receives a sample published before it matched, so the
+// retained latched sample is *not* delivered. This is the failure mode that
+// silently happens whenever a subscriber would be created volatile -- exactly
+// what the discovery race produces when no durability is requested.
+TEST_F(ClientHandlerFixture, volatile_subscriber_does_not_receive_latched_message_published_before_subscribe)
+{
+  auto server_node = std::make_shared<rclcpp::Node>("rws_volatile_server_test");
+  auto publisher_node = std::make_shared<rclcpp::Node>("rws_volatile_publisher_test");
+  auto node_interface = std::make_shared<rws::NodeInterfaceImpl>(server_node);
+  auto connector = std::make_shared<rws::Connector<>>(node_interface);
+
+  std::mutex messages_mutex;
+  std::condition_variable messages_cv;
+  std::vector<std::string> outbound_messages;
+  auto websocket_callback = [&](std::string & msg) {
+    {
+      std::lock_guard<std::mutex> lock(messages_mutex);
+      outbound_messages.push_back(msg);
+    }
+    messages_cv.notify_all();
+  };
+
+  auto handler = std::make_shared<rws::ClientHandler>(
+    1, node_interface, connector, true, websocket_callback,
+    [](std::vector<std::uint8_t> &) {});
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(server_node);
+  executor.add_node(publisher_node);
+  ExecutorSpinGuard spin_guard(executor);
+
+  rclcpp::QoS latched_qos(1);
+  latched_qos.transient_local();
+  auto publisher =
+    publisher_node->create_publisher<std_msgs::msg::String>("/test_volatile_latched_topic", latched_qos);
+  std_msgs::msg::String latched_message;
+  latched_message.data = "latched hello";
+  publisher->publish(latched_message);
+
+  const char * subscribe_json = R"({
+    "op": "subscribe",
+    "topic": "/test_volatile_latched_topic",
+    "type": "std_msgs/msg/String",
+    "qos": { "durability": "volatile" }
+  })";
+  auto subscribe_response = handler->process_message_rapid(subscribe_json, strlen(subscribe_json));
+  EXPECT_TRUE(subscribe_response.empty());
+
+  // The subscriber is QoS-compatible and does match the publisher...
+  ASSERT_TRUE(wait_for_condition(
+    [&publisher]() { return publisher->get_subscription_count() > 0; }, 4s));
+
+  // ...but it must NOT receive the sample retained before it joined.
+  {
+    std::unique_lock<std::mutex> lock(messages_mutex);
+    EXPECT_FALSE(messages_cv.wait_for(
+      lock, 1s, [&outbound_messages]() { return !outbound_messages.empty(); }));
+  }
+}
+
 TEST_F(ClientHandlerFixture, websocket_topic_publish_reaches_ros_subscriber_quickly)
 {
   auto server_node = std::make_shared<rclcpp::Node>("rws_ws_to_ros_server_test");
