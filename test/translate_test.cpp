@@ -10,8 +10,13 @@
 #include <rapidjson/writer.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include <cstring>
+#include <string>
+#include <vector>
+
 #include "rcl_interfaces/msg/log.hpp"
 #include "rclcpp/serialization.hpp"
+#include "rws/base64.hpp"
 
 namespace rws
 {
@@ -280,6 +285,191 @@ TEST_F(TranslateFixture, DescribeMsgsNestedType)
     "string frame_id\n";
 
   EXPECT_EQ(msg_desc, expected);
+}
+
+// ============================================================================
+// Base64 byte-array encoding (rosbridge protocol §3.1)
+// ============================================================================
+
+namespace
+{
+
+// Build a JSON document with a single member set to a number array of bytes.
+rapidjson::Document make_byte_array_doc(const char * field, const std::vector<int> & bytes)
+{
+  rapidjson::Document doc;
+  doc.SetObject();
+  auto & alloc = doc.GetAllocator();
+  rapidjson::Value arr(rapidjson::kArrayType);
+  for (int b : bytes) {
+    arr.PushBack(b, alloc);
+  }
+  doc.AddMember(rapidjson::StringRef(field), arr, alloc);
+  return doc;
+}
+
+// Build a JSON document with a single member set to a (base64) string.
+rapidjson::Document make_string_doc(const char * field, const char * value)
+{
+  rapidjson::Document doc;
+  doc.SetObject();
+  auto & alloc = doc.GetAllocator();
+  doc.AddMember(rapidjson::StringRef(field), rapidjson::StringRef(value), alloc);
+  return doc;
+}
+
+bool serialized_equal(const rws::SharedMessage & a, const rws::SharedMessage & b)
+{
+  const auto & ra = a->get_rcl_serialized_message();
+  const auto & rb = b->get_rcl_serialized_message();
+  if (ra.buffer_length != rb.buffer_length) {
+    return false;
+  }
+  return std::memcmp(ra.buffer, rb.buffer, ra.buffer_length) == 0;
+}
+
+}  // namespace
+
+// --- Step 2: self-contained base64 codec unit tests ---
+
+TEST_F(TranslateFixture, Base64EncodeSpecExamples)
+{
+  const unsigned char zeros[4] = {0, 0, 0, 0};
+  EXPECT_EQ(rws::base64_encode(zeros, 4), "AAAAAA==");
+  const unsigned char ffs[4] = {255, 255, 255, 255};
+  EXPECT_EQ(rws::base64_encode(ffs, 4), "/////w==");
+}
+
+TEST_F(TranslateFixture, Base64EncodeKnownVectors)
+{
+  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("Man"), 3), "TWFu");
+  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("Ma"), 2), "TWE=");
+  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("M"), 1), "TQ==");
+  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>(""), 0), "");
+}
+
+TEST_F(TranslateFixture, Base64DecodeSpecExamples)
+{
+  EXPECT_EQ(rws::base64_decode("AAAAAA=="), std::string(4, '\0'));
+  EXPECT_EQ(rws::base64_decode("/////w=="), std::string(4, static_cast<char>(0xFF)));
+}
+
+TEST_F(TranslateFixture, Base64DecodeSkipsWhitespaceAndPadding)
+{
+  EXPECT_EQ(rws::base64_decode("TW Fu\n"), "Man");
+  EXPECT_EQ(rws::base64_decode(""), "");
+}
+
+TEST_F(TranslateFixture, Base64RoundTripAllByteValues)
+{
+  std::string data;
+  for (int i = 0; i < 256; ++i) {
+    data.push_back(static_cast<char>(i));
+  }
+  auto enc = rws::base64_encode(reinterpret_cast<const unsigned char *>(data.data()), data.size());
+  EXPECT_EQ(rws::base64_decode(enc), data);
+}
+
+// --- Step 1: integration tests (ROS <-> JSON wire protocol) ---
+
+// Encode: outgoing uint8[] / byte[] dynamic arrays become base64 strings.
+TEST_F(TranslateFixture, EncodeDynamicByteArraysAsBase64)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto doc = make_byte_array_doc("uint8_values", {0, 0, 0, 0});
+  auto & alloc = doc.GetAllocator();
+  rapidjson::Value bv(rapidjson::kArrayType);
+  for (int b : {255, 255, 255, 255}) {
+    bv.PushBack(b, alloc);
+  }
+  doc.AddMember("byte_values", bv, alloc);
+
+  auto msg = rws::json_to_serialized_message(type, doc);
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+
+  ASSERT_TRUE(out["uint8_values"].IsString());
+  EXPECT_STREQ(out["uint8_values"].GetString(), "AAAAAA==");
+  ASSERT_TRUE(out["byte_values"].IsString());
+  EXPECT_STREQ(out["byte_values"].GetString(), "/////w==");
+}
+
+// Encode: outgoing char[] arrays become base64 strings.
+TEST_F(TranslateFixture, EncodeCharArrayAsBase64)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto doc = make_byte_array_doc("char_values", {65, 66, 67});  // "ABC"
+
+  auto msg = rws::json_to_serialized_message(type, doc);
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+
+  ASSERT_TRUE(out["char_values"].IsString());
+  EXPECT_STREQ(out["char_values"].GetString(), "QUJD");
+}
+
+// Encode: an empty byte array becomes an empty base64 string.
+TEST_F(TranslateFixture, EncodeEmptyByteArrayAsEmptyString)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto doc = make_byte_array_doc("uint8_values", {});
+
+  auto msg = rws::json_to_serialized_message(type, doc);
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+
+  ASSERT_TRUE(out["uint8_values"].IsString());
+  EXPECT_STREQ(out["uint8_values"].GetString(), "");
+}
+
+// Encode: fixed-size uint8[N] arrays become base64 strings.
+TEST_F(TranslateFixture, EncodeFixedSizeByteArrayAsBase64)
+{
+  const char * type = "test_msgs/msg/Arrays";
+  auto doc = make_byte_array_doc("uint8_values", {1, 2, 3});
+
+  auto msg = rws::json_to_serialized_message(type, doc);
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+
+  ASSERT_TRUE(out["uint8_values"].IsString());
+  EXPECT_STREQ(out["uint8_values"].GetString(), "AQID");
+}
+
+// Non-byte numeric arrays must remain JSON number arrays, never base64.
+TEST_F(TranslateFixture, NonByteArraysStayNumeric)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto doc = make_byte_array_doc("uint16_values", {1, 2, 3});
+
+  auto msg = rws::json_to_serialized_message(type, doc);
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+
+  ASSERT_TRUE(out["uint16_values"].IsArray());
+  ASSERT_EQ(out["uint16_values"].Size(), 3u);
+  EXPECT_EQ(out["uint16_values"][0].GetUint(), 1u);
+  EXPECT_EQ(out["uint16_values"][2].GetUint(), 3u);
+}
+
+// Decode: an incoming base64 string yields the same message as the equivalent
+// number array (dynamic array).
+TEST_F(TranslateFixture, DecodeBase64DynamicMatchesNumberArray)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto from_b64 = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "/////w=="));
+  auto from_num = rws::json_to_serialized_message(type, make_byte_array_doc("uint8_values", {255, 255, 255, 255}));
+  EXPECT_TRUE(serialized_equal(from_b64, from_num));
+}
+
+// Decode: an incoming base64 string yields the same message as the equivalent
+// number array (fixed-size array).
+TEST_F(TranslateFixture, DecodeBase64FixedMatchesNumberArray)
+{
+  const char * type = "test_msgs/msg/Arrays";
+  auto from_b64 = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "AQID"));
+  auto from_num = rws::json_to_serialized_message(type, make_byte_array_doc("uint8_values", {1, 2, 3}));
+  EXPECT_TRUE(serialized_equal(from_b64, from_num));
 }
 
 }  // namespace rws

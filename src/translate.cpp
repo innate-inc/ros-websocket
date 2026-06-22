@@ -22,6 +22,7 @@
 #include "rosidl_typesupport_introspection_cpp/field_types.hpp"
 #include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 #include "rosidl_typesupport_introspection_cpp/service_introspection.hpp"
+#include "rws/base64.hpp"
 #include "rws/typesupport_helpers.hpp"
 #include "serdes.hpp"
 
@@ -66,7 +67,6 @@ static void deserialize_field_rapid(cycdeser & deser, const MessageMember * memb
       writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
     }
   } else {
-    writer.StartArray();
     size_t count;
     if (member->array_size_ && !member->is_upper_bound_) {
       count = member->array_size_;
@@ -75,30 +75,43 @@ static void deserialize_field_rapid(cycdeser & deser, const MessageMember * memb
       deser >> seq_size;
       count = seq_size;
     }
-    for (size_t i = 0; i < count; i++) {
-      deser >> val;
-      if constexpr (std::is_same_v<T, bool>) {
-        writer.Bool(val);
-      } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
-        writer.Int(val);
-      } else if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
-        writer.Uint(val);
-      } else if constexpr (std::is_same_v<T, int64_t>) {
-        writer.Int64(val);
-      } else if constexpr (std::is_same_v<T, uint64_t>) {
-        writer.Uint64(val);
-      } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-        writer.Double(val);
-      } else if constexpr (std::is_same_v<T, char>) {
-        writer.Int(static_cast<int>(val));
-      } else if constexpr (std::is_same_v<T, std::string>) {
-        writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
-      } else if constexpr (std::is_same_v<T, std::wstring>) {
-        std::string narrow(val.begin(), val.end());
-        writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+    if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
+      // rosbridge protocol: byte arrays (uint8[]/byte[]/char[]) are encoded as
+      // base64 strings rather than JSON number arrays.
+      std::string bytes;
+      bytes.reserve(count);
+      for (size_t i = 0; i < count; i++) {
+        deser >> val;
+        bytes.push_back(static_cast<char>(val));
       }
+      std::string encoded =
+        base64_encode(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+      writer.String(encoded.data(), static_cast<rapidjson::SizeType>(encoded.size()));
+    } else {
+      writer.StartArray();
+      for (size_t i = 0; i < count; i++) {
+        deser >> val;
+        if constexpr (std::is_same_v<T, bool>) {
+          writer.Bool(val);
+        } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
+          writer.Int(val);
+        } else if constexpr (std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
+          writer.Uint(val);
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+          writer.Int64(val);
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+          writer.Uint64(val);
+        } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+          writer.Double(val);
+        } else if constexpr (std::is_same_v<T, std::string>) {
+          writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
+        } else if constexpr (std::is_same_v<T, std::wstring>) {
+          std::string narrow(val.begin(), val.end());
+          writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+        }
+      }
+      writer.EndArray();
     }
-    writer.EndArray();
   }
 }
 
@@ -271,6 +284,16 @@ static void serialize_field_rapid(
     }
   } else if (member->array_size_ && !member->is_upper_bound_) {
     // Fixed-size array
+    if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
+      if (field.IsString()) {
+        // rosbridge protocol: byte arrays may arrive as a base64 string.
+        std::string bytes = base64_decode(field.GetString(), field.GetStringLength());
+        for (size_t i = 0; i < member->array_size_; i++) {
+          ser << (i < bytes.size() ? static_cast<T>(bytes[i]) : default_value);
+        }
+        return;
+      }
+    }
     for (size_t i = 0; i < member->array_size_; i++) {
       if (field.IsNull() || !field.IsArray() || i >= field.Size() || field[i].IsNull()) {
         ser << default_value;
@@ -309,6 +332,17 @@ static void serialize_field_rapid(
       }
     }
   } else {
+    if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
+      if (field.IsString()) {
+        // rosbridge protocol: byte arrays may arrive as a base64 string.
+        std::string bytes = base64_decode(field.GetString(), field.GetStringLength());
+        ser << static_cast<uint32_t>(bytes.size());
+        for (char c : bytes) {
+          ser << static_cast<T>(c);
+        }
+        return;
+      }
+    }
     // Dynamic array
     uint32_t seq_size = field.IsArray() ? field.Size() : 0;
     ser << seq_size;
