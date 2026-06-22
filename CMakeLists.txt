@@ -126,11 +126,12 @@ if(BUILD_TESTING)
     test/translate_test.cpp
   )
   ament_target_dependencies(rws_translate_test ${DEPENDENCIES})
+  ament_target_dependencies(rws_translate_test std_msgs)
   target_include_directories(rws_translate_test PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(rws_translate_test rapidjson)
+  target_link_libraries(rws_translate_test rapidjson websocketpp)
 
   # rws_typesupport_helpers_test
   ament_add_gtest(rws_typesupport_helpers_test
@@ -173,7 +174,7 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
     $<INSTALL_INTERFACE:include>)
-  target_link_libraries(client_handler_test rapidjson)
+  target_link_libraries(client_handler_test rapidjson websocketpp)
 endif()
 
 ament_package()
