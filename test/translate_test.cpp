@@ -16,7 +16,9 @@
 
 #include "rcl_interfaces/msg/log.hpp"
 #include "rclcpp/serialization.hpp"
-#include "rws/base64.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
+#include "rws/typesupport_helpers.hpp"
+#include "std_msgs/msg/u_int8_multi_array.hpp"
 
 namespace rws
 {
@@ -330,47 +332,7 @@ bool serialized_equal(const rws::SharedMessage & a, const rws::SharedMessage & b
 
 }  // namespace
 
-// --- Step 2: self-contained base64 codec unit tests ---
-
-TEST_F(TranslateFixture, Base64EncodeSpecExamples)
-{
-  const unsigned char zeros[4] = {0, 0, 0, 0};
-  EXPECT_EQ(rws::base64_encode(zeros, 4), "AAAAAA==");
-  const unsigned char ffs[4] = {255, 255, 255, 255};
-  EXPECT_EQ(rws::base64_encode(ffs, 4), "/////w==");
-}
-
-TEST_F(TranslateFixture, Base64EncodeKnownVectors)
-{
-  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("Man"), 3), "TWFu");
-  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("Ma"), 2), "TWE=");
-  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>("M"), 1), "TQ==");
-  EXPECT_EQ(rws::base64_encode(reinterpret_cast<const unsigned char *>(""), 0), "");
-}
-
-TEST_F(TranslateFixture, Base64DecodeSpecExamples)
-{
-  EXPECT_EQ(rws::base64_decode("AAAAAA=="), std::string(4, '\0'));
-  EXPECT_EQ(rws::base64_decode("/////w=="), std::string(4, static_cast<char>(0xFF)));
-}
-
-TEST_F(TranslateFixture, Base64DecodeSkipsWhitespaceAndPadding)
-{
-  EXPECT_EQ(rws::base64_decode("TW Fu\n"), "Man");
-  EXPECT_EQ(rws::base64_decode(""), "");
-}
-
-TEST_F(TranslateFixture, Base64RoundTripAllByteValues)
-{
-  std::string data;
-  for (int i = 0; i < 256; ++i) {
-    data.push_back(static_cast<char>(i));
-  }
-  auto enc = rws::base64_encode(reinterpret_cast<const unsigned char *>(data.data()), data.size());
-  EXPECT_EQ(rws::base64_decode(enc), data);
-}
-
-// --- Step 1: integration tests (ROS <-> JSON wire protocol) ---
+// --- Integration tests (ROS <-> JSON wire protocol) ---
 
 // Encode: outgoing uint8[] / byte[] dynamic arrays become base64 strings.
 TEST_F(TranslateFixture, EncodeDynamicByteArraysAsBase64)
@@ -470,6 +432,27 @@ TEST_F(TranslateFixture, DecodeBase64FixedMatchesNumberArray)
   auto from_b64 = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "AQID"));
   auto from_num = rws::json_to_serialized_message(type, make_byte_array_doc("uint8_values", {1, 2, 3}));
   EXPECT_TRUE(serialized_equal(from_b64, from_num));
+}
+
+// Decode via the direct message-population path used for action goals
+// (json_to_ros_message -> set_array_field_rapid): a base64 string must populate
+// a uint8[] field, just like the serialize path.
+TEST_F(TranslateFixture, ActionGoalPathDecodesBase64ByteArray)
+{
+  const char * type = "std_msgs/msg/UInt8MultiArray";
+  auto library = get_typesupport_library(type, ts_identifier);
+  auto ts = rclcpp::get_typesupport_handle(type, ts_identifier, *library);
+  auto members = static_cast<const MessageMembers *>(ts->data);
+
+  std_msgs::msg::UInt8MultiArray msg_b64;
+  json_to_ros_message(make_string_doc("data", "AQID"), members, &msg_b64);
+
+  std_msgs::msg::UInt8MultiArray msg_num;
+  json_to_ros_message(make_byte_array_doc("data", {1, 2, 3}), members, &msg_num);
+
+  const std::vector<uint8_t> expected{1, 2, 3};
+  EXPECT_EQ(msg_b64.data, expected);
+  EXPECT_EQ(msg_num.data, expected);
 }
 
 }  // namespace rws

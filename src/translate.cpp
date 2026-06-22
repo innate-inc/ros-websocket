@@ -22,7 +22,8 @@
 #include "rosidl_typesupport_introspection_cpp/field_types.hpp"
 #include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 #include "rosidl_typesupport_introspection_cpp/service_introspection.hpp"
-#include "rws/base64.hpp"
+#include <websocketpp/base64/base64.hpp>
+
 #include "rws/typesupport_helpers.hpp"
 #include "serdes.hpp"
 
@@ -84,8 +85,7 @@ static void deserialize_field_rapid(cycdeser & deser, const MessageMember * memb
         deser >> val;
         bytes.push_back(static_cast<char>(val));
       }
-      std::string encoded =
-        base64_encode(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+      std::string encoded = websocketpp::base64_encode(bytes);
       writer.String(encoded.data(), static_cast<rapidjson::SizeType>(encoded.size()));
     } else {
       writer.StartArray();
@@ -287,7 +287,8 @@ static void serialize_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (field.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes = base64_decode(field.GetString(), field.GetStringLength());
+        std::string bytes =
+          websocketpp::base64_decode(std::string(field.GetString(), field.GetStringLength()));
         for (size_t i = 0; i < member->array_size_; i++) {
           ser << (i < bytes.size() ? static_cast<T>(bytes[i]) : default_value);
         }
@@ -335,7 +336,8 @@ static void serialize_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (field.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes = base64_decode(field.GetString(), field.GetStringLength());
+        std::string bytes =
+          websocketpp::base64_decode(std::string(field.GetString(), field.GetStringLength()));
         ser << static_cast<uint32_t>(bytes.size());
         for (char c : bytes) {
           ser << static_cast<T>(c);
@@ -628,6 +630,17 @@ static void set_array_field_rapid(
   } else if (member->array_size_ && !member->is_upper_bound_) {
     // Fixed-size array
     T * data = static_cast<T *>(field_ptr);
+    if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
+      if (value.IsString()) {
+        // rosbridge protocol: byte arrays may arrive as a base64 string.
+        std::string bytes =
+          websocketpp::base64_decode(std::string(value.GetString(), value.GetStringLength()));
+        for (size_t i = 0; i < member->array_size_; i++) {
+          data[i] = i < bytes.size() ? static_cast<T>(bytes[i]) : default_val;
+        }
+        return;
+      }
+    }
     for (size_t i = 0; i < member->array_size_; i++) {
       if (value.IsArray() && i < value.Size() && !value[static_cast<rapidjson::SizeType>(i)].IsNull()) {
         const auto& elem = value[static_cast<rapidjson::SizeType>(i)];
@@ -664,6 +677,18 @@ static void set_array_field_rapid(
     // Dynamic array (vector)
     auto * vec = static_cast<std::vector<T> *>(field_ptr);
     vec->clear();
+    if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
+      if (value.IsString()) {
+        // rosbridge protocol: byte arrays may arrive as a base64 string.
+        std::string bytes =
+          websocketpp::base64_decode(std::string(value.GetString(), value.GetStringLength()));
+        vec->reserve(bytes.size());
+        for (char c : bytes) {
+          vec->push_back(static_cast<T>(c));
+        }
+        return;
+      }
+    }
     if (value.IsArray()) {
       vec->reserve(value.Size());
       for (rapidjson::SizeType i = 0; i < value.Size(); i++) {
