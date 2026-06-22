@@ -447,6 +447,31 @@ TEST_F(TranslateFixture, DecodeBase64ToleratesWhitespace)
   EXPECT_TRUE(serialized_equal(from_ws, from_num));
 }
 
+// Fixed-size decode: a base64 string SHORTER than the array zero-pads the
+// remainder. NOTE: this is a deliberate local leniency — reference rosbridge
+// delegates to rclpy, which rejects a wrong-length fixed array. Pinned so a
+// refactor can't silently change the contract.
+TEST_F(TranslateFixture, DecodeBase64FixedUnderLengthPads)
+{
+  const char * type = "test_msgs/msg/Arrays";  // uint8_values is uint8[3]
+  auto msg = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "AQ=="));  // {1}
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+  ASSERT_TRUE(out["uint8_values"].IsString());
+  EXPECT_STREQ(out["uint8_values"].GetString(), "AQAA");  // {1, 0, 0}
+}
+
+// Fixed-size decode: a base64 string LONGER than the array drops extra bytes.
+TEST_F(TranslateFixture, DecodeBase64FixedOverLengthTruncates)
+{
+  const char * type = "test_msgs/msg/Arrays";  // uint8_values is uint8[3]
+  auto msg = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "AQIDBA=="));  // {1,2,3,4}
+  rapidjson::Document out;
+  rws::serialized_message_to_json(type, msg, out);
+  ASSERT_TRUE(out["uint8_values"].IsString());
+  EXPECT_STREQ(out["uint8_values"].GetString(), "AQID");  // {1, 2, 3} (4th dropped)
+}
+
 // Decode via the direct message-population path used for action goals
 // (json_to_ros_message -> set_array_field_rapid): a base64 string must populate
 // a uint8[] field, just like the serialize path.
