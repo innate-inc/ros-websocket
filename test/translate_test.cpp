@@ -334,8 +334,9 @@ bool serialized_equal(const rws::SharedMessage & a, const rws::SharedMessage & b
 
 // --- Integration tests (ROS <-> JSON wire protocol) ---
 
-// Encode: outgoing uint8[] / byte[] dynamic arrays become base64 strings.
-TEST_F(TranslateFixture, EncodeDynamicByteArraysAsBase64)
+// Encode: outgoing uint8[] becomes a base64 string, but byte[] is NOT a binary
+// type per rosbridge and must stay a JSON number array.
+TEST_F(TranslateFixture, EncodeUint8AsBase64ButByteStaysNumeric)
 {
   const char * type = "test_msgs/msg/UnboundedSequences";
   auto doc = make_byte_array_doc("uint8_values", {0, 0, 0, 0});
@@ -352,8 +353,10 @@ TEST_F(TranslateFixture, EncodeDynamicByteArraysAsBase64)
 
   ASSERT_TRUE(out["uint8_values"].IsString());
   EXPECT_STREQ(out["uint8_values"].GetString(), "AAAAAA==");
-  ASSERT_TRUE(out["byte_values"].IsString());
-  EXPECT_STREQ(out["byte_values"].GetString(), "/////w==");
+  ASSERT_TRUE(out["byte_values"].IsArray());
+  ASSERT_EQ(out["byte_values"].Size(), 4u);
+  EXPECT_EQ(out["byte_values"][0].GetUint(), 255u);
+  EXPECT_EQ(out["byte_values"][3].GetUint(), 255u);
 }
 
 // Encode: outgoing char[] arrays become base64 strings.

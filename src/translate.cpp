@@ -60,7 +60,8 @@ static std::string decode_base64_field(const char * data, size_t len)
 // ============================================================================
 
 template <typename T>
-static void deserialize_field_rapid(cycdeser & deser, const MessageMember * member, RapidWriter & writer)
+static void deserialize_field_rapid(
+  cycdeser & deser, const MessageMember * member, RapidWriter & writer, bool base64 = false)
 {
   T val;
   if (!member->is_array_) {
@@ -96,41 +97,46 @@ static void deserialize_field_rapid(cycdeser & deser, const MessageMember * memb
       count = seq_size;
     }
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
-      // rosbridge protocol: byte arrays (uint8[]/byte[]/char[]) are encoded as
-      // base64 strings rather than JSON number arrays.
-      std::string bytes;
-      bytes.reserve(count);
-      for (size_t i = 0; i < count; i++) {
-        deser >> val;
-        bytes.push_back(static_cast<char>(val));
-      }
-      std::string encoded = websocketpp::base64_encode(bytes);
-      writer.String(encoded.data(), static_cast<rapidjson::SizeType>(encoded.size()));
-    } else {
-      writer.StartArray();
-      for (size_t i = 0; i < count; i++) {
-        deser >> val;
-        if constexpr (std::is_same_v<T, bool>) {
-          writer.Bool(val);
-        } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
-          writer.Int(val);
-        } else if constexpr (std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
-          writer.Uint(val);
-        } else if constexpr (std::is_same_v<T, int64_t>) {
-          writer.Int64(val);
-        } else if constexpr (std::is_same_v<T, uint64_t>) {
-          writer.Uint64(val);
-        } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-          writer.Double(val);
-        } else if constexpr (std::is_same_v<T, std::string>) {
-          writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
-        } else if constexpr (std::is_same_v<T, std::wstring>) {
-          std::string narrow(val.begin(), val.end());
-          writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+      // rosbridge protocol: uint8[]/char[] arrays are encoded as base64 strings
+      // rather than JSON number arrays. byte[] (ROS_TYPE_BYTE) is NOT a binary
+      // type per rosbridge and stays numeric — hence the runtime base64 flag.
+      if (base64) {
+        std::string bytes;
+        bytes.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+          deser >> val;
+          bytes.push_back(static_cast<char>(val));
         }
+        std::string encoded = websocketpp::base64_encode(bytes);
+        writer.String(encoded.data(), static_cast<rapidjson::SizeType>(encoded.size()));
+        return;
       }
-      writer.EndArray();
     }
+    writer.StartArray();
+    for (size_t i = 0; i < count; i++) {
+      deser >> val;
+      if constexpr (std::is_same_v<T, bool>) {
+        writer.Bool(val);
+      } else if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, int16_t> || std::is_same_v<T, int32_t>) {
+        writer.Int(val);
+      } else if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> || std::is_same_v<T, uint32_t>) {
+        writer.Uint(val);
+      } else if constexpr (std::is_same_v<T, int64_t>) {
+        writer.Int64(val);
+      } else if constexpr (std::is_same_v<T, uint64_t>) {
+        writer.Uint64(val);
+      } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        writer.Double(val);
+      } else if constexpr (std::is_same_v<T, char>) {
+        writer.Int(static_cast<int>(val));
+      } else if constexpr (std::is_same_v<T, std::string>) {
+        writer.String(val.c_str(), static_cast<rapidjson::SizeType>(val.size()));
+      } else if constexpr (std::is_same_v<T, std::wstring>) {
+        std::string narrow(val.begin(), val.end());
+        writer.String(narrow.c_str(), static_cast<rapidjson::SizeType>(narrow.size()));
+      }
+    }
+    writer.EndArray();
   }
 }
 
@@ -149,11 +155,14 @@ static void serialized_message_to_json_rapid(cycdeser & deser, const MessageMemb
         deserialize_field_rapid<bool>(deser, member, writer);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_BYTE:
+        // byte[] is not a binary type per rosbridge: keep it as a number array.
+        deserialize_field_rapid<uint8_t>(deser, member, writer, /*base64=*/false);
+        break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
-        deserialize_field_rapid<uint8_t>(deser, member, writer);
+        deserialize_field_rapid<uint8_t>(deser, member, writer, /*base64=*/true);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_CHAR:
-        deserialize_field_rapid<char>(deser, member, writer);
+        deserialize_field_rapid<char>(deser, member, writer, /*base64=*/true);
         break;
       case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT32:
         deserialize_field_rapid<float>(deser, member, writer);
