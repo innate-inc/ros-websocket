@@ -434,6 +434,16 @@ TEST_F(TranslateFixture, DecodeBase64FixedMatchesNumberArray)
   EXPECT_TRUE(serialized_equal(from_b64, from_num));
 }
 
+// Decode: whitespace/newlines in a base64 string are stripped before decoding
+// (leniency matching reference rosbridge), not truncated at the first such char.
+TEST_F(TranslateFixture, DecodeBase64ToleratesWhitespace)
+{
+  const char * type = "test_msgs/msg/UnboundedSequences";
+  auto from_ws = rws::json_to_serialized_message(type, make_string_doc("uint8_values", "AQ ID\n"));
+  auto from_num = rws::json_to_serialized_message(type, make_byte_array_doc("uint8_values", {1, 2, 3}));
+  EXPECT_TRUE(serialized_equal(from_ws, from_num));
+}
+
 // Decode via the direct message-population path used for action goals
 // (json_to_ros_message -> set_array_field_rapid): a base64 string must populate
 // a uint8[] field, just like the serialize path.

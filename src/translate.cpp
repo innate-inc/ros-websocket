@@ -36,6 +36,25 @@ using rosidl_typesupport_introspection_cpp::MessageMember;
 using rosidl_typesupport_introspection_cpp::MessageMembers;
 using rosidl_typesupport_introspection_cpp::ServiceMembers;
 
+// Decode a base64 byte-array field to raw bytes. Non-alphabet characters
+// (whitespace, newlines, etc.) are stripped before decoding, matching the
+// leniency of reference rosbridge (Python's standard_b64decode) — websocketpp's
+// decoder would otherwise stop at the first non-alphabet character and silently
+// truncate the result.
+static std::string decode_base64_field(const char * data, size_t len)
+{
+  std::string cleaned;
+  cleaned.reserve(len);
+  for (size_t i = 0; i < len; ++i) {
+    const char c = data[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+      c == '+' || c == '/' || c == '=') {
+      cleaned.push_back(c);
+    }
+  }
+  return websocketpp::base64_decode(cleaned);
+}
+
 // ============================================================================
 // RapidJSON Deserialization (ROS message -> JSON)
 // ============================================================================
@@ -287,8 +306,7 @@ static void serialize_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (field.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes =
-          websocketpp::base64_decode(std::string(field.GetString(), field.GetStringLength()));
+        std::string bytes = decode_base64_field(field.GetString(), field.GetStringLength());
         for (size_t i = 0; i < member->array_size_; i++) {
           ser << (i < bytes.size() ? static_cast<T>(bytes[i]) : default_value);
         }
@@ -336,8 +354,7 @@ static void serialize_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (field.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes =
-          websocketpp::base64_decode(std::string(field.GetString(), field.GetStringLength()));
+        std::string bytes = decode_base64_field(field.GetString(), field.GetStringLength());
         ser << static_cast<uint32_t>(bytes.size());
         for (char c : bytes) {
           ser << static_cast<T>(c);
@@ -633,8 +650,7 @@ static void set_array_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (value.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes =
-          websocketpp::base64_decode(std::string(value.GetString(), value.GetStringLength()));
+        std::string bytes = decode_base64_field(value.GetString(), value.GetStringLength());
         for (size_t i = 0; i < member->array_size_; i++) {
           data[i] = i < bytes.size() ? static_cast<T>(bytes[i]) : default_val;
         }
@@ -680,8 +696,7 @@ static void set_array_field_rapid(
     if constexpr (std::is_same_v<T, uint8_t> || std::is_same_v<T, char>) {
       if (value.IsString()) {
         // rosbridge protocol: byte arrays may arrive as a base64 string.
-        std::string bytes =
-          websocketpp::base64_decode(std::string(value.GetString(), value.GetStringLength()));
+        std::string bytes = decode_base64_field(value.GetString(), value.GetStringLength());
         vec->reserve(bytes.size());
         for (char c : bytes) {
           vec->push_back(static_cast<T>(c));
