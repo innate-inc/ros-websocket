@@ -166,11 +166,8 @@ GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
     json_to_ros_message(goal_json, goal_members_, goal_field);
   }
 
-  // Store callbacks for this goal. The continuations below deliberately
-  // capture NO callbacks — only goal ids. They re-fetch from this registry at
-  // fire time and invoke under the mutex, so a disconnected client's
-  // detach_owner() atomically prevents any further use of its (destroyed)
-  // ClientHandler.
+  // Continuations capture only goal ids; callbacks are re-fetched from this
+  // registry at fire time so detach_owner() can sever them.
   {
     std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
     goal_callbacks_[goal_id] = {
@@ -254,8 +251,7 @@ GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
               }
             }
 
-            // No result delivered (serialization failed or resultless type):
-            // still drop the goal from tracking.
+            // No result delivered: still drop the goal from tracking.
             std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
             goal_callbacks_.erase(goal_id);
           });
@@ -295,9 +291,8 @@ void GenericActionClient::async_cancel_goal(
         }
       }
 
-      // Note: the goal stays in goal_callbacks_ — a successfully cancelled
-      // goal still terminates through its result path, which delivers the
-      // CANCELED result to the client and erases the tracking entry.
+      // The goal stays in goal_callbacks_: a cancelled goal still delivers
+      // its CANCELED result, which erases the entry.
     });
 }
 
@@ -305,8 +300,6 @@ void GenericActionClient::send_detached_cancel(const GoalUUID & goal_id)
 {
   auto cancel_request = std::make_shared<action_msgs::srv::CancelGoal::Request>();
   std::copy(goal_id.begin(), goal_id.end(), cancel_request->goal_info.goal_id.uuid.begin());
-  // Reply intentionally ignored: the owner is gone; the goal's result path
-  // (already detached) finishes server-side housekeeping.
   this->send_cancel_request(
     std::static_pointer_cast<void>(cancel_request), [](std::shared_ptr<void>) {});
 }
@@ -335,9 +328,7 @@ void GenericActionClient::detach_owner(int owner_id)
       }
     }
   }
-  // Cancel the vanished client's in-flight goals so the robot doesn't keep
-  // executing work nobody can see or stop (the one-skill-at-a-time skills
-  // server would also reject every new goal until it finished).
+  // Cancel the vanished client's goals so no headless work continues.
   for (const auto & goal_id : owned_goals) {
     send_detached_cancel(goal_id);
   }
@@ -410,8 +401,7 @@ void GenericActionClient::handle_feedback_message(std::shared_ptr<void> message)
   }
 
   if (ser_feedback) {
-    // Invoke under the mutex: detach_owner erases under the same lock, so a
-    // callback can never run against a ClientHandler that is being destroyed.
+    // Invoke under the mutex — detach_owner erases under the same lock.
     std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
     auto it = goal_callbacks_.find(goal_id);
     if (it != goal_callbacks_.end() && it->second.feedback_callback) {

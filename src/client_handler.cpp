@@ -60,11 +60,8 @@ ClientHandler::~ClientHandler()
   RCLCPP_INFO(
     get_logger(), "Destroying client %s(%s)", std::to_string(client_id_).c_str(),
     string_thread_id().c_str());
-  // Sever this client's action callbacks BEFORE any member teardown: the
-  // (node-owned, long-lived) action clients would otherwise invoke callbacks
-  // that capture this handler after it is gone — the use-after-free that
-  // crashed the whole bridge whenever a client disconnected mid-goal. Also
-  // cancels this client's in-flight goals so no headless work continues.
+  // Sever action callbacks first — they capture this handler and the (node-
+  // owned, long-lived) action clients would invoke them after destruction.
   for (auto it = action_clients_.begin(); it != action_clients_.end(); ++it) {
     it->second->detach_owner(client_id_);
   }

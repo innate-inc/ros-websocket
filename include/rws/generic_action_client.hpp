@@ -68,13 +68,11 @@ public:
 
   /// Send an action goal asynchronously.
   /**
-   * Callbacks are stored in an owner-tagged registry and looked up at fire
-   * time (never captured by the async continuations), so detach_owner() can
-   * sever a disconnected websocket client from its in-flight goals without
-   * destroying this (long-lived, node-owned) action client.
+   * Callbacks go into an owner-tagged registry and are looked up at fire time
+   * (never captured by the async continuations), so detach_owner() can sever
+   * a disconnected client without destroying this action client.
    *
-   * \param[in] owner_id Tag identifying the websocket client that owns the
-   *   goal (see detach_owner)
+   * \param[in] owner_id The websocket client owning the goal (see detach_owner)
    * \param[in] goal_json RapidJSON Value containing the goal fields
    * \param[in] goal_response_callback Called when goal is accepted/rejected
    * \param[in] feedback_callback Called when feedback is received (optional)
@@ -89,23 +87,10 @@ public:
     ResultCallback result_callback);
 
   /// Cancel a goal by its UUID.
-  /**
-   * \param[in] owner_id Tag identifying the websocket client requesting the cancel
-   * \param[in] goal_id The goal UUID to cancel
-   * \param[in] cancel_callback Called when cancel response is received
-   */
   void async_cancel_goal(int owner_id, const GoalUUID & goal_id, CancelCallback cancel_callback);
 
-  /// Sever a websocket client from this action client.
-  /**
-   * Erases every callback registered by \p owner_id — under the same mutex the
-   * dispatch paths invoke callbacks with, so after this returns no callback of
-   * that owner is running or can ever run — and requests cancellation of the
-   * owner's in-flight goals so a vanished client doesn't leave the robot
-   * executing headless work. Called from ~ClientHandler; the action client
-   * itself stays alive (destroying ROS entities under a spinning executor is
-   * what used to crash the bridge).
-   */
+  /// Erase every callback registered by owner_id (under the dispatch mutex, so
+  /// none can be mid-flight afterwards) and cancel its in-flight goals.
   void detach_owner(int owner_id);
 
   /// Get the action type string.
@@ -160,10 +145,9 @@ private:
   const MessageMembers * result_request_members_;
   const MessageMembers * result_response_members_;
 
-  // Pending callbacks, tagged with the websocket client that registered them.
-  // Dispatch paths look these up at fire time and invoke them WHILE HOLDING
-  // goal_callbacks_mutex_; detach_owner erases under the same mutex, which is
-  // the use-after-free guard for destroyed ClientHandlers.
+  // Pending callbacks, tagged by registering client. Dispatch invokes them
+  // while holding goal_callbacks_mutex_; detach_owner erases under the same
+  // mutex — the use-after-free guard for destroyed ClientHandlers.
   struct GoalCallbacks {
     int owner_id;
     GoalResponseCallback goal_response_callback;
