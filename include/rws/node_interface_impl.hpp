@@ -1,6 +1,10 @@
 #ifndef RWS__NODE_INTERFACE_IMPL_HPP_
 #define RWS__NODE_INTERFACE_IMPL_HPP_
 
+#include <map>
+#include <mutex>
+#include <string>
+
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
 #include "rws/node_interface.hpp"
@@ -73,6 +77,18 @@ public:
     const std::string & action_name, const std::string & action_type,
     const rcl_action_client_options_t & options = rcl_action_client_get_default_options())
   {
+    // Action clients are node-owned and live for the process lifetime, shared
+    // across websocket clients. Destroying one while the executor dispatches
+    // its callbacks is what used to segfault the bridge on client disconnect;
+    // disconnected clients are severed via GenericActionClient::detach_owner
+    // instead. Bounded by the number of distinct actions ever used.
+    std::lock_guard<std::mutex> lock(action_client_cache_mutex_);
+    const std::string key = action_name + "|" + action_type;
+    auto it = action_client_cache_.find(key);
+    if (it != action_client_cache_.end()) {
+      return it->second;
+    }
+
     auto action_client = GenericActionClient::make_shared(
       node_->get_node_base_interface(),
       node_->get_node_graph_interface(),
@@ -82,6 +98,7 @@ public:
       options);
 
     node_->get_node_waitables_interface()->add_waitable(action_client, nullptr);
+    action_client_cache_[key] = action_client;
     return action_client;
   }
 
@@ -133,6 +150,9 @@ public:
 
 private:
   std::shared_ptr<rclcpp::Node> node_;
+  // Process-lifetime action clients, keyed by "action_name|action_type".
+  std::map<std::string, GenericActionClient::SharedPtr> action_client_cache_;
+  std::mutex action_client_cache_mutex_;
 };
 
 }  // namespace rws

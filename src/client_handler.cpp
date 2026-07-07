@@ -60,6 +60,14 @@ ClientHandler::~ClientHandler()
   RCLCPP_INFO(
     get_logger(), "Destroying client %s(%s)", std::to_string(client_id_).c_str(),
     string_thread_id().c_str());
+  // Sever this client's action callbacks BEFORE any member teardown: the
+  // (node-owned, long-lived) action clients would otherwise invoke callbacks
+  // that capture this handler after it is gone — the use-after-free that
+  // crashed the whole bridge whenever a client disconnected mid-goal. Also
+  // cancels this client's in-flight goals so no headless work continues.
+  for (auto it = action_clients_.begin(); it != action_clients_.end(); ++it) {
+    it->second->detach_owner(client_id_);
+  }
   for (auto it = subscriptions_.begin(); it != subscriptions_.end(); ++it) {
     it->second();
   }
@@ -1293,7 +1301,7 @@ bool ClientHandler::send_action_goal_rapid(const rapidjson::Document & msg, rapi
     };
 
     auto goal_id = action_client->async_send_goal(
-      goal_args, goal_response_callback, feedback_callback, result_callback);
+      client_id_, goal_args, goal_response_callback, feedback_callback, result_callback);
 
     // No immediate response per rosbridge spec - action_result comes asynchronously
     (void)goal_id;  // Goal ID is returned via action_result callback
@@ -1384,7 +1392,7 @@ bool ClientHandler::cancel_action_goal_rapid(const rapidjson::Document & msg, ra
     }
     
     action_clients_[action_name]->async_cancel_goal(
-      goal_id,
+      client_id_, goal_id,
       [this, id_str, id_int, id_is_string, action_name, goal_id_str](bool success) {
         // Per spec, cancellation confirmation comes via action_result with canceled status
         // But we send a status message if cancel request failed
