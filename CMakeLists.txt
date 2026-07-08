@@ -175,6 +175,25 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
     $<INSTALL_INTERFACE:include>)
   target_link_libraries(client_handler_test rapidjson websocketpp)
+
+  # action_disconnect_test — regression for the disconnect-mid-goal use-after-free
+  find_package(test_msgs REQUIRED)
+  ament_add_gtest(action_disconnect_test
+    test/action_disconnect_test.cpp
+    src/client_handler.cpp
+    src/typesupport_helpers.cpp
+    src/translate.cpp
+    src/serdes.cpp
+    src/generic_action_client.cpp
+  )
+  ament_target_dependencies(action_disconnect_test ${DEPENDENCIES})
+  ament_target_dependencies(action_disconnect_test std_msgs std_srvs test_msgs)
+  target_include_directories(action_disconnect_test PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/mocks>
+    $<INSTALL_INTERFACE:include>)
+  target_link_libraries(action_disconnect_test rapidjson websocketpp)
 endif()
 
 ament_package()

@@ -68,6 +68,7 @@ public:
 
   /// Send an action goal asynchronously.
   /**
+   * \param[in] owner_id The websocket client owning the goal (see detach_owner)
    * \param[in] goal_json RapidJSON Value containing the goal fields
    * \param[in] goal_response_callback Called when goal is accepted/rejected
    * \param[in] feedback_callback Called when feedback is received (optional)
@@ -75,17 +76,18 @@ public:
    * \return The goal UUID
    */
   GoalUUID async_send_goal(
+    int owner_id,
     const rapidjson::Value & goal_json,
     GoalResponseCallback goal_response_callback,
     FeedbackCallback feedback_callback,
     ResultCallback result_callback);
 
   /// Cancel a goal by its UUID.
-  /**
-   * \param[in] goal_id The goal UUID to cancel
-   * \param[in] cancel_callback Called when cancel response is received
-   */
-  void async_cancel_goal(const GoalUUID & goal_id, CancelCallback cancel_callback);
+  void async_cancel_goal(int owner_id, const GoalUUID & goal_id, CancelCallback cancel_callback);
+
+  /// Erase every callback registered by owner_id (under the dispatch mutex, so
+  /// none can be mid-flight afterwards) and cancel its in-flight goals.
+  void detach_owner(int owner_id);
 
   /// Get the action type string.
   std::string get_action_type() const { return action_type_; }
@@ -139,16 +141,34 @@ private:
   const MessageMembers * result_request_members_;
   const MessageMembers * result_response_members_;
 
-  // Pending callbacks
+  // Callbacks are looked up here at fire time and invoked while holding
+  // goal_callbacks_mutex_; detach_owner erases under the same mutex.
   struct GoalCallbacks {
+    int owner_id;
+    GoalResponseCallback goal_response_callback;
     FeedbackCallback feedback_callback;
     ResultCallback result_callback;
   };
   std::unordered_map<GoalUUID, GoalCallbacks> goal_callbacks_;
   std::mutex goal_callbacks_mutex_;
 
-  std::unordered_map<int64_t, CancelCallback> pending_cancel_callbacks_;
+  struct CancelEntry {
+    int owner_id;
+    CancelCallback callback;
+  };
+  std::unordered_map<int64_t, CancelEntry> pending_cancel_callbacks_;
+  int64_t next_cancel_token_ = 0;
   std::mutex cancel_callbacks_mutex_;
+
+  /// Send a CancelGoal request with no reply callback (used by detach_owner).
+  void send_detached_cancel(const GoalUUID & goal_id);
+
+  // async_send_goal continuations: capture only the goal id and re-fetch
+  // callbacks from the registry at fire time.
+  void on_goal_response(const GoalUUID & goal_id, std::shared_ptr<void> response);
+  void request_result_for(const GoalUUID & goal_id);
+  void on_result_response(const GoalUUID & goal_id, std::shared_ptr<void> response);
+  SharedResponse serialize_result_field(std::shared_ptr<void> response) const;
 };
 
 }  // namespace rws
