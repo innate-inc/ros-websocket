@@ -77,9 +77,8 @@ public:
     const std::string & action_name, const std::string & action_type,
     const rcl_action_client_options_t & options = rcl_action_client_get_default_options())
   {
-    // Node-owned, process-lifetime, shared across websocket clients: never
-    // destroy a waitable under the spinning executor. Disconnected clients
-    // are severed via detach_owner instead.
+    // Process-lifetime and shared across websocket clients: never destroy a
+    // waitable under the spinning executor (see detach_owner).
     std::lock_guard<std::mutex> lock(action_client_cache_mutex_);
     const std::string key = action_name + "|" + action_type;
     auto it = action_client_cache_.find(key);

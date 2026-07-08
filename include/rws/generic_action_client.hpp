@@ -68,10 +68,6 @@ public:
 
   /// Send an action goal asynchronously.
   /**
-   * Callbacks go into an owner-tagged registry and are looked up at fire time
-   * (never captured by the async continuations), so detach_owner() can sever
-   * a disconnected client without destroying this action client.
-   *
    * \param[in] owner_id The websocket client owning the goal (see detach_owner)
    * \param[in] goal_json RapidJSON Value containing the goal fields
    * \param[in] goal_response_callback Called when goal is accepted/rejected
@@ -145,9 +141,8 @@ private:
   const MessageMembers * result_request_members_;
   const MessageMembers * result_response_members_;
 
-  // Pending callbacks, tagged by registering client. Dispatch invokes them
-  // while holding goal_callbacks_mutex_; detach_owner erases under the same
-  // mutex — the use-after-free guard for destroyed ClientHandlers.
+  // Callbacks are looked up here at fire time and invoked while holding
+  // goal_callbacks_mutex_; detach_owner erases under the same mutex.
   struct GoalCallbacks {
     int owner_id;
     GoalResponseCallback goal_response_callback;

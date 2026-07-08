@@ -60,8 +60,7 @@ ClientHandler::~ClientHandler()
   RCLCPP_INFO(
     get_logger(), "Destroying client %s(%s)", std::to_string(client_id_).c_str(),
     string_thread_id().c_str());
-  // Sever action callbacks first — they capture this handler and the (node-
-  // owned, long-lived) action clients would invoke them after destruction.
+  // Sever action callbacks first — they capture this handler.
   for (auto it = action_clients_.begin(); it != action_clients_.end(); ++it) {
     it->second->detach_owner(client_id_);
   }

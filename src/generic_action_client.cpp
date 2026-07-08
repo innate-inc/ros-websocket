@@ -166,8 +166,6 @@ GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
     json_to_ros_message(goal_json, goal_members_, goal_field);
   }
 
-  // Continuations capture only goal ids; callbacks are re-fetched from this
-  // registry at fire time so detach_owner() can sever them.
   {
     std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
     goal_callbacks_[goal_id] = {
@@ -328,7 +326,6 @@ void GenericActionClient::detach_owner(int owner_id)
       }
     }
   }
-  // Cancel the vanished client's goals so no headless work continues.
   for (const auto & goal_id : owned_goals) {
     send_detached_cancel(goal_id);
   }
@@ -375,7 +372,7 @@ void GenericActionClient::handle_feedback_message(std::shared_ptr<void> message)
   GoalUUID goal_id;
   std::copy(goal_id_field->uuid.begin(), goal_id_field->uuid.end(), goal_id.begin());
 
-  // Serialize the feedback field before taking the lock (pure message work)
+  // Serialize before taking the lock
   std::shared_ptr<rclcpp::SerializedMessage> ser_feedback;
   if (feedback_message_members_->member_count_ >= 2) {
     const auto * feedback_member = &feedback_message_members_->members_[1];
@@ -401,7 +398,6 @@ void GenericActionClient::handle_feedback_message(std::shared_ptr<void> message)
   }
 
   if (ser_feedback) {
-    // Invoke under the mutex — detach_owner erases under the same lock.
     std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
     auto it = goal_callbacks_.find(goal_id);
     if (it != goal_callbacks_.end() && it->second.feedback_callback) {
