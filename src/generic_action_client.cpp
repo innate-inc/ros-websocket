@@ -172,91 +172,94 @@ GenericActionClient::GoalUUID GenericActionClient::async_send_goal(
       owner_id, goal_response_callback, feedback_callback, result_callback};
   }
 
-  // Send the goal request
-  this->send_goal_request(
-    request,
-    [this, goal_id](std::shared_ptr<void> response) {
-      // Check if goal was accepted
-      // GoalResponse has: accepted (bool) + stamp (builtin_interfaces/Time)
-      auto * accepted_field = reinterpret_cast<bool *>(
-        reinterpret_cast<uint8_t *>(response.get()) + goal_response_members_->members_[0].offset_);
-      bool accepted = *accepted_field;
-
-      bool request_result = false;
-      {
-        std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
-        auto it = goal_callbacks_.find(goal_id);
-        if (it == goal_callbacks_.end()) {
-          return;  // owner detached while the goal response was in flight
-        }
-        if (it->second.goal_response_callback) {
-          it->second.goal_response_callback(accepted, goal_id);
-        }
-        if (!accepted) {
-          goal_callbacks_.erase(it);
-        } else {
-          request_result = static_cast<bool>(it->second.result_callback);
-        }
-      }
-
-      if (request_result) {
-        // Request the result
-        auto result_request = allocate_message(result_request_members_);
-
-        // Set goal_id in result request
-        auto * result_goal_id = reinterpret_cast<unique_identifier_msgs::msg::UUID *>(
-          reinterpret_cast<uint8_t *>(result_request.get()) +
-          result_request_members_->members_[0].offset_);
-        std::copy(goal_id.begin(), goal_id.end(), result_goal_id->uuid.begin());
-
-        this->send_result_request(
-          result_request,
-          [this, goal_id](std::shared_ptr<void> result_response) {
-            // Extract status and result
-            int8_t status = *reinterpret_cast<int8_t *>(
-              reinterpret_cast<uint8_t *>(result_response.get()) +
-              result_response_members_->members_[0].offset_);
-
-            // Serialize the result field for the callback
-            if (result_response_members_->member_count_ >= 2) {
-              const auto * result_member = &result_response_members_->members_[1];
-              void * result_field = reinterpret_cast<uint8_t *>(result_response.get()) +
-                result_member->offset_;
-
-              // result_member->members_ is a rosidl_message_type_support_t*, cast its data
-              const auto * result_field_members = static_cast<const MessageMembers *>(result_member->members_->data);
-              std::string result_type = rws::get_type_from_message_members(result_field_members);
-
-              // Use rosidl_typesupport_cpp for serialization (not introspection)
-              const char * serialize_ts_id = "rosidl_typesupport_cpp";
-              auto result_ts_lib = rclcpp::get_typesupport_library(result_type, serialize_ts_id);
-              auto result_ts_hdl = rclcpp::get_typesupport_handle(
-                result_type, serialize_ts_id, *result_ts_lib);
-
-              auto ser_result = std::make_shared<rclcpp::SerializedMessage>();
-              rmw_ret_t r = rmw_serialize(
-                result_field, result_ts_hdl, &ser_result->get_rcl_serialized_message());
-              if (r == RMW_RET_OK) {
-                std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
-                auto it = goal_callbacks_.find(goal_id);
-                if (it != goal_callbacks_.end()) {
-                  if (it->second.result_callback) {
-                    it->second.result_callback(goal_id, status, ser_result);
-                  }
-                  goal_callbacks_.erase(it);
-                }
-                return;
-              }
-            }
-
-            // No result delivered: still drop the goal from tracking.
-            std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
-            goal_callbacks_.erase(goal_id);
-          });
-      }
-    });
+  this->send_goal_request(request, [this, goal_id](std::shared_ptr<void> response) {
+    on_goal_response(goal_id, response);
+  });
 
   return goal_id;
+}
+
+void GenericActionClient::on_goal_response(const GoalUUID & goal_id, std::shared_ptr<void> response)
+{
+  // GoalResponse has: accepted (bool) + stamp (builtin_interfaces/Time)
+  bool accepted = *reinterpret_cast<bool *>(
+    reinterpret_cast<uint8_t *>(response.get()) + goal_response_members_->members_[0].offset_);
+
+  bool want_result = false;
+  {
+    std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
+    auto it = goal_callbacks_.find(goal_id);
+    if (it == goal_callbacks_.end()) {
+      return;  // owner detached while the goal response was in flight
+    }
+    if (it->second.goal_response_callback) {
+      it->second.goal_response_callback(accepted, goal_id);
+    }
+    if (!accepted) {
+      goal_callbacks_.erase(it);
+    } else {
+      want_result = static_cast<bool>(it->second.result_callback);
+    }
+  }
+
+  if (want_result) {
+    request_result_for(goal_id);
+  }
+}
+
+void GenericActionClient::request_result_for(const GoalUUID & goal_id)
+{
+  auto result_request = allocate_message(result_request_members_);
+  auto * result_goal_id = reinterpret_cast<unique_identifier_msgs::msg::UUID *>(
+    reinterpret_cast<uint8_t *>(result_request.get()) + result_request_members_->members_[0].offset_);
+  std::copy(goal_id.begin(), goal_id.end(), result_goal_id->uuid.begin());
+
+  this->send_result_request(result_request, [this, goal_id](std::shared_ptr<void> response) {
+    on_result_response(goal_id, response);
+  });
+}
+
+void GenericActionClient::on_result_response(const GoalUUID & goal_id, std::shared_ptr<void> response)
+{
+  // GetResult response: status (int8) + result (the actual result message)
+  int8_t status = *reinterpret_cast<int8_t *>(
+    reinterpret_cast<uint8_t *>(response.get()) + result_response_members_->members_[0].offset_);
+  SharedResponse ser_result = serialize_result_field(response);
+
+  std::lock_guard<std::mutex> lock(goal_callbacks_mutex_);
+  auto it = goal_callbacks_.find(goal_id);
+  if (it == goal_callbacks_.end()) {
+    return;  // owner detached while the result was in flight
+  }
+  if (ser_result && it->second.result_callback) {
+    it->second.result_callback(goal_id, status, ser_result);
+  }
+  goal_callbacks_.erase(it);
+}
+
+GenericActionClient::SharedResponse GenericActionClient::serialize_result_field(
+  std::shared_ptr<void> response) const
+{
+  if (result_response_members_->member_count_ < 2) {
+    return nullptr;
+  }
+  const auto * result_member = &result_response_members_->members_[1];
+  void * result_field = reinterpret_cast<uint8_t *>(response.get()) + result_member->offset_;
+
+  // result_member->members_ is a rosidl_message_type_support_t*, cast its data
+  const auto * field_members = static_cast<const MessageMembers *>(result_member->members_->data);
+  std::string result_type = rws::get_type_from_message_members(field_members);
+
+  // Use rosidl_typesupport_cpp for serialization (not introspection)
+  const char * serialize_ts_id = "rosidl_typesupport_cpp";
+  auto ts_lib = rclcpp::get_typesupport_library(result_type, serialize_ts_id);
+  auto ts_hdl = rclcpp::get_typesupport_handle(result_type, serialize_ts_id, *ts_lib);
+
+  auto serialized = std::make_shared<rclcpp::SerializedMessage>();
+  if (rmw_serialize(result_field, ts_hdl, &serialized->get_rcl_serialized_message()) != RMW_RET_OK) {
+    return nullptr;
+  }
+  return serialized;
 }
 
 void GenericActionClient::async_cancel_goal(

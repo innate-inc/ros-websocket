@@ -162,6 +162,13 @@ private:
 
   /// Send a CancelGoal request with no reply callback (used by detach_owner).
   void send_detached_cancel(const GoalUUID & goal_id);
+
+  // async_send_goal continuations: capture only the goal id and re-fetch
+  // callbacks from the registry at fire time.
+  void on_goal_response(const GoalUUID & goal_id, std::shared_ptr<void> response);
+  void request_result_for(const GoalUUID & goal_id);
+  void on_result_response(const GoalUUID & goal_id, std::shared_ptr<void> response);
+  SharedResponse serialize_result_field(std::shared_ptr<void> response) const;
 };
 
 }  // namespace rws
